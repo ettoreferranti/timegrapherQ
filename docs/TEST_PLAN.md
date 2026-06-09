@@ -71,10 +71,14 @@ score must drop and the UI must indicate low reliability (not silently mislead).
   — **Partly implemented** (220/270/280/290°). TODO: full sweep + alt lift angles.
 - **TC-M5** With added noise at the defined SNR, thresholds still met; below it,
   confidence drops and rejected-beat count rises. *(FR-M5)*
+  — **Partly implemented** (`rate_robust_to_louder_noise`). TODO: characterise the
+  exact SNR breakpoint and assert graceful degradation across a sweep.
 - **TC-M6** Record-then-analyse returns a complete result for a fixed clip. *(FR-M6)*
+  — Exercised manually via the app; backend helpers unit-tested.
 - **TC-M7** Wrong/auto bph: auto-detect recovers correct bph for common rates. *(FR-M9)*
 - **TC-M8** Degenerate inputs (silence, pure noise, clipping) yield low/zero
   confidence and never crash. *(FR-M5)*
+  — **Partly implemented** (`pure_noise_yields_low_confidence_or_none`). TODO: silence/clipping cases.
 
 ### Live trace (FR-M7/8)
 - **TC-M9** Live trace renders beats; slope reflects injected rate; line gap

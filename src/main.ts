@@ -20,6 +20,9 @@ interface MeasurementDto {
   bph: number;
   lift_angle_deg: number;
   beats_detected: number;
+  beats_used: number;
+  beats_expected: number;
+  quality: number;
   sample_rate: number;
   device_name: string;
   clip_seconds: number;
@@ -67,8 +70,11 @@ function showMetrics(m: MeasurementDto): void {
   el("m-amplitude").textContent = formatAmplitude(m.amplitude_deg);
 
   el("result-meta").textContent =
-    `${m.beats_detected} beats · ${(m.sample_rate / 1000).toFixed(1)} kHz · ` +
-    `${m.clip_seconds.toFixed(0)} s · ${m.bph} bph · ${m.lift_angle_deg}° lift · ${m.device_name}`;
+    `confidence ${Math.round(m.quality * 100)}% · ${m.beats_used}/${m.beats_expected} ticks · ` +
+    `${(m.sample_rate / 1000).toFixed(1)} kHz · ${m.clip_seconds.toFixed(0)} s · ` +
+    `${m.bph} bph · ${m.lift_angle_deg}° lift · ${m.device_name}`;
+
+  el("result").classList.toggle("low-confidence", m.quality < 0.6);
 
   const warning = el<HTMLParagraphElement>("warning");
   if (m.warning) {

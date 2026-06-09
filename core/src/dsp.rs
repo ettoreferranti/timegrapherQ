@@ -72,19 +72,16 @@ pub fn envelope(signal: &[f64], sample_rate: f64, tau_s: f64) -> Vec<f64> {
 }
 
 /// Detect transient onsets as the argmax of each contiguous run where the
-/// envelope exceeds `threshold_ratio * max_envelope`, with accepted peaks kept
-/// at least `refractory_s` apart. Returns onset times in seconds.
-pub fn detect_onsets(
-    env: &[f64],
-    sample_rate: f64,
-    threshold_ratio: f64,
-    refractory_s: f64,
-) -> Vec<f64> {
-    let max_env = env.iter().copied().fold(0.0_f64, f64::max);
-    if max_env <= 0.0 {
+/// envelope exceeds the absolute `threshold`, with accepted peaks kept at least
+/// `refractory_s` apart. Returns onset times in seconds.
+///
+/// The threshold is supplied by the caller (see [`percentile`]) so it can be
+/// made robust to a few loud outliers rather than tied to the global maximum.
+pub fn detect_onsets(env: &[f64], sample_rate: f64, threshold: f64, refractory_s: f64) -> Vec<f64> {
+    if threshold <= 0.0 {
         return Vec::new();
     }
-    let thr = threshold_ratio * max_env;
+    let thr = threshold;
     let refractory_n = (refractory_s * sample_rate).round() as usize;
 
     let mut onsets = Vec::new();
@@ -116,6 +113,20 @@ pub fn detect_onsets(
         }
     }
     onsets
+}
+
+/// The `p`-quantile (0.0–1.0) of `values` via nearest-rank on a sorted copy.
+/// Used to derive a detection reference level that ignores a few extreme
+/// outliers (e.g. handling bumps), unlike the raw maximum.
+pub fn percentile(values: &[f64], p: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut v = values.to_vec();
+    v.sort_by(f64::total_cmp);
+    let p = p.clamp(0.0, 1.0);
+    let idx = (p * (v.len() - 1) as f64).round() as usize;
+    v[idx]
 }
 
 #[cfg(test)]
@@ -175,5 +186,16 @@ mod tests {
         env[150] = 0.9; // ~1 ms later, inside a 3 ms refractory window
         let onsets = detect_onsets(&env, fs, 0.3, 0.003);
         assert_eq!(onsets.len(), 1);
+    }
+
+    #[test]
+    fn percentile_ignores_sparse_outliers() {
+        // 100 samples near 1.0 plus one huge spike: p99 stays near 1, not 1000.
+        let mut v = vec![1.0; 100];
+        v.push(1000.0);
+        let p99 = percentile(&v, 0.99);
+        assert!((p99 - 1.0).abs() < 1e-9, "p99={p99}");
+        assert_eq!(percentile(&v, 1.0), 1000.0);
+        assert_eq!(percentile(&[], 0.5), 0.0);
     }
 }

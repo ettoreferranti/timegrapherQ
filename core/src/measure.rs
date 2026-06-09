@@ -1,15 +1,14 @@
 //! Measurement pipeline: turn raw audio samples into the headline timegrapher
-//! metrics — rate (s/day), beat error (ms) and amplitude (degrees).
+//! metrics — rate (s/day), beat error (ms) and amplitude (degrees) — together
+//! with a **confidence score** so unreliable readings can be flagged rather
+//! than presented as fake precision.
 //!
 //! Pipeline: band-pass → envelope → onset detection (`crate::dsp`) → group
-//! transients into beats → derive metrics. Each beat normally contains two
-//! transients (the impulse pair); their spacing encodes amplitude, while the
-//! beat onsets encode rate and beat error.
+//! transients into beats → reconstruct each beat's number from timing (robust
+//! to missed beats) → reject outliers → derive metrics + confidence.
 //!
 //! Validated against `crate::synth` ground-truth signals in the tests below
-//! (see `docs/TEST_PLAN.md`). Robust outlier rejection / confidence scoring is
-//! M1-9; this module assumes every beat is detected (true for clean and mildly
-//! noisy signals).
+//! (see `docs/TEST_PLAN.md`).
 
 use crate::{amplitude_degrees, dsp};
 
@@ -27,17 +26,23 @@ pub struct AnalysisConfig {
     pub bandpass_q: f64,
     /// Envelope smoothing time constant (seconds).
     pub envelope_tau_s: f64,
-    /// Onset threshold as a fraction of the peak envelope.
+    /// Envelope quantile (0–1) used as the detection reference level; robust to
+    /// a few loud outliers, unlike the raw maximum.
+    pub reference_percentile: f64,
+    /// Onset threshold as a fraction of the reference level.
     pub threshold_ratio: f64,
     /// Minimum spacing between accepted onsets (seconds).
     pub refractory_s: f64,
     /// A gap larger than this fraction of the nominal beat period starts a new
     /// beat group (separates beats from the within-beat impulse pair).
     pub beat_gap_ratio: f64,
+    /// Beats whose onset deviates from the fitted line by more than this
+    /// fraction of the nominal period are rejected as outliers.
+    pub max_residual_ratio: f64,
 }
 
 impl AnalysisConfig {
-    /// Defaults suitable for a clean line-level recording of a wristwatch.
+    /// Defaults suitable for a reasonable recording of a wristwatch.
     pub fn new(bph: u32, lift_angle_deg: f64) -> Self {
         Self {
             bph,
@@ -45,9 +50,11 @@ impl AnalysisConfig {
             bandpass_center_hz: 3000.0,
             bandpass_q: 0.7,
             envelope_tau_s: 0.0008,
+            reference_percentile: 0.99,
             threshold_ratio: 0.3,
             refractory_s: 0.003,
             beat_gap_ratio: 0.4,
+            max_residual_ratio: 0.25,
         }
     }
 }
@@ -65,42 +72,81 @@ pub struct Measurement {
     pub bph: u32,
     /// Lift angle used for the amplitude computation.
     pub lift_angle_deg: f64,
-    /// Number of beats used (after trimming edge beats).
+    /// Beats grouped from detected transients (before outlier rejection).
     pub beats_detected: usize,
+    /// Beats actually used after outlier rejection.
+    pub beats_used: usize,
+    /// Beats expected for the clip duration at this bph.
+    pub beats_expected: usize,
+    /// Confidence in [0, 1]: how much to trust this measurement.
+    pub quality: f64,
 }
 
-/// One detected beat: the onset of its first transient and, when present, the
-/// spacing to the second transient (used for amplitude).
+/// One detected beat: the onset of its first transient, the spacing to the
+/// second transient (for amplitude), and its reconstructed beat number.
 #[derive(Clone, Copy, Debug)]
 struct Beat {
     onset: f64,
     spacing: Option<f64>,
+    index: f64,
 }
 
 /// Analyse `samples` and return the timegrapher metrics, or `None` if too few
-/// beats were detected to measure reliably.
+/// beats were detected to measure at all. A successful return may still carry a
+/// low [`Measurement::quality`] — callers should surface that to the user.
 pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Option<Measurement> {
     let sr = f64::from(sample_rate);
+    let duration_s = samples.len() as f64 / sr;
+    let nominal_period = 3600.0 / f64::from(cfg.bph);
+    let beats_expected = (duration_s / nominal_period).round() as usize;
+
     let filtered = dsp::bandpass(samples, sr, cfg.bandpass_center_hz, cfg.bandpass_q);
     let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
-    let onsets = dsp::detect_onsets(&env, sr, cfg.threshold_ratio, cfg.refractory_s);
+    let reference = dsp::percentile(&env, cfg.reference_percentile);
+    let threshold = cfg.threshold_ratio * reference;
+    let onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s);
 
-    let nominal_period = 3600.0 / f64::from(cfg.bph);
-    let beats = trim_edges(group_beats(&onsets, nominal_period, cfg.beat_gap_ratio));
-    if beats.len() < 4 {
+    let mut beats = trim_edges(group_beats(&onsets, nominal_period, cfg.beat_gap_ratio));
+    let beats_detected = beats.len();
+    if beats_detected < 4 {
         return None;
     }
 
-    let beat_onsets: Vec<f64> = beats.iter().map(|b| b.onset).collect();
-    let measured_period = regression_slope(&beat_onsets);
+    // Reconstruct each beat's number from its timing. Because the rate error is
+    // tiny relative to the period, the nominal period dates each beat correctly
+    // even when some beats are missed — so a gap no longer corrupts the fit.
+    let t0 = beats[0].onset;
+    for b in &mut beats {
+        b.index = ((b.onset - t0) / nominal_period).round();
+    }
+
+    // First fit, then reject onsets that lie far from the line (spurious
+    // detections / merged beats), then refit on the survivors.
+    let idx: Vec<f64> = beats.iter().map(|b| b.index).collect();
+    let onset_t: Vec<f64> = beats.iter().map(|b| b.onset).collect();
+    let (slope, intercept) = ols(&idx, &onset_t)?;
+    let tol = cfg.max_residual_ratio * nominal_period;
+    let kept: Vec<Beat> = beats
+        .iter()
+        .copied()
+        .filter(|b| (b.onset - (intercept + slope * b.index)).abs() <= tol)
+        .collect();
+    if kept.len() < 4 {
+        return None;
+    }
+
+    let kept_idx: Vec<f64> = kept.iter().map(|b| b.index).collect();
+    let kept_onset: Vec<f64> = kept.iter().map(|b| b.onset).collect();
+    let (measured_period, _) = ols(&kept_idx, &kept_onset)?;
     if measured_period <= 0.0 {
         return None;
     }
 
     // A watch that gains time has a shorter beat period than nominal.
     let rate_s_per_day = 86_400.0 * (nominal_period / measured_period - 1.0);
-    let beat_error_ms = beat_error_ms(&beat_onsets);
-    let amplitude_deg = amplitude_from_beats(&beats, cfg);
+    let beat_error_ms = beat_error_ms_from_beats(&kept);
+    let amplitude_deg = amplitude_from_beats(&kept, cfg);
+    let quality = confidence(&kept, beats_expected, measured_period, nominal_period);
 
     Some(Measurement {
         rate_s_per_day,
@@ -108,7 +154,10 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
         amplitude_deg,
         bph: cfg.bph,
         lift_angle_deg: cfg.lift_angle_deg,
-        beats_detected: beats.len(),
+        beats_detected,
+        beats_used: kept.len(),
+        beats_expected,
+        quality,
     })
 }
 
@@ -132,6 +181,7 @@ fn group_beats(onsets: &[f64], nominal_period: f64, gap_ratio: f64) -> Vec<Beat>
         beats.push(Beat {
             onset: start,
             spacing,
+            index: 0.0,
         });
         i = j;
     }
@@ -148,33 +198,44 @@ fn trim_edges(mut beats: Vec<Beat>) -> Vec<Beat> {
     beats
 }
 
-/// Best-fit slope of `ys` against the index 0,1,2,… — i.e. the average step
-/// (here, the measured beat period). Beat error is zero-mean across beats and
-/// so does not bias the slope.
-fn regression_slope(ys: &[f64]) -> f64 {
-    let n = ys.len() as f64;
-    let sx: f64 = (0..ys.len()).map(|k| k as f64).sum();
+/// Ordinary least squares; returns `(slope, intercept)` of `ys` on `xs`.
+fn ols(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
+    let n = xs.len() as f64;
+    if xs.len() < 2 {
+        return None;
+    }
+    let sx: f64 = xs.iter().sum();
     let sy: f64 = ys.iter().sum();
-    let sxx: f64 = (0..ys.len()).map(|k| (k as f64) * (k as f64)).sum();
-    let sxy: f64 = ys.iter().enumerate().map(|(k, &y)| k as f64 * y).sum();
-    (n * sxy - sx * sy) / (n * sxx - sx * sx)
+    let sxx: f64 = xs.iter().map(|x| x * x).sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let denom = n * sxx - sx * sx;
+    if denom.abs() < f64::EPSILON {
+        return None;
+    }
+    let slope = (n * sxy - sx * sy) / denom;
+    let intercept = (sy - slope * sx) / n;
+    Some((slope, intercept))
 }
 
-/// Beat error: the difference between the two interleaved half-period
-/// intervals (tick vs tock), in milliseconds. Robust to outliers via medians.
-fn beat_error_ms(onsets: &[f64]) -> f64 {
-    if onsets.len() < 3 {
-        return 0.0;
-    }
+/// Beat error: the difference between the two interleaved half-period intervals
+/// (tick vs tock), in milliseconds, using only beats with consecutive numbers
+/// so that missed beats are skipped rather than mis-paired.
+fn beat_error_ms_from_beats(beats: &[Beat]) -> f64 {
     let mut even = Vec::new();
     let mut odd = Vec::new();
-    for k in 0..onsets.len() - 1 {
-        let d = onsets[k + 1] - onsets[k];
-        if k.is_multiple_of(2) {
-            even.push(d);
-        } else {
-            odd.push(d);
+    for w in beats.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if (b.index - a.index - 1.0).abs() < 0.5 {
+            let d = b.onset - a.onset;
+            if (a.index as i64).rem_euclid(2) == 0 {
+                even.push(d);
+            } else {
+                odd.push(d);
+            }
         }
+    }
+    if even.is_empty() || odd.is_empty() {
+        return 0.0;
     }
     (median(&mut even) - median(&mut odd)).abs() * 1000.0
 }
@@ -187,6 +248,18 @@ fn amplitude_from_beats(beats: &[Beat], cfg: &AnalysisConfig) -> Option<f64> {
     }
     let dt = median(&mut spacings);
     amplitude_degrees(dt, cfg.lift_angle_deg, cfg.bph)
+}
+
+/// Confidence in [0, 1] combining how many of the expected beats survived and
+/// how closely the measured period matches the nominal one (a sanity check
+/// that we locked onto a real, periodic tick rather than noise).
+fn confidence(kept: &[Beat], beats_expected: usize, measured_period: f64, nominal: f64) -> f64 {
+    if beats_expected == 0 {
+        return 0.0;
+    }
+    let coverage = (kept.len() as f64 / beats_expected as f64).clamp(0.0, 1.0);
+    let period_factor = (1.0 - (measured_period / nominal - 1.0).abs() / 0.2).clamp(0.0, 1.0);
+    (coverage * period_factor).clamp(0.0, 1.0)
 }
 
 /// Median of a slice (sorts in place). Returns 0.0 for an empty slice.
@@ -216,12 +289,12 @@ mod tests {
 
     #[test]
     fn detects_most_beats_on_clean_signal() {
-        // ~8 beats/s over 5 s ≈ 40 beats, minus the two trimmed edges.
         let m = analyze_spec(&SignalSpec {
             duration_s: 5.0,
             ..Default::default()
         });
         assert!(m.beats_detected >= 36, "beats={}", m.beats_detected);
+        assert!(m.quality > 0.8, "quality={}", m.quality);
     }
 
     #[test]
@@ -333,11 +406,11 @@ mod tests {
             "amplitude={:?}",
             m.amplitude_deg
         );
+        assert!(m.quality > 0.8, "quality={}", m.quality);
     }
 
     #[test]
     fn handles_alternate_beat_rate() {
-        // 21600 bph (6 beats/s) movement.
         let m = analyze_spec(&SignalSpec {
             duration_s: 12.0,
             bph: 21_600,
@@ -355,5 +428,42 @@ mod tests {
             "amplitude={:?}",
             m.amplitude_deg
         );
+    }
+
+    #[test]
+    fn rate_robust_to_louder_noise() {
+        // Heavier noise (SNR ~ a few): outlier rejection + reconstructed indices
+        // should still recover rate within tolerance, with decent confidence.
+        let m = analyze_spec(&SignalSpec {
+            duration_s: 20.0,
+            rate_s_per_day: 8.0,
+            amplitude_deg: 275.0,
+            noise_amplitude: 0.06,
+            seed: 11,
+            ..Default::default()
+        });
+        assert!(
+            (m.rate_s_per_day - 8.0).abs() < 1.0,
+            "rate={} quality={}",
+            m.rate_s_per_day,
+            m.quality
+        );
+        assert!(m.quality > 0.6, "quality={}", m.quality);
+    }
+
+    #[test]
+    fn pure_noise_yields_low_confidence_or_none() {
+        // White-ish noise with no ticks must not masquerade as a confident
+        // reading: analyze should return None or a low quality score.
+        let noise: Vec<f32> = (0..44_100 * 10)
+            .map(|i| {
+                let r = (i as u64).wrapping_mul(2_654_435_761).wrapping_add(12345) % 2003;
+                (r as f32 / 1001.0 - 1.0) * 0.5
+            })
+            .collect();
+        let cfg = AnalysisConfig::new(28_800, 52.0);
+        if let Some(m) = analyze(&noise, 44_100, &cfg) {
+            assert!(m.quality < 0.5, "noise quality too high: {}", m.quality);
+        }
     }
 }

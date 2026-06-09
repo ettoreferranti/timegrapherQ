@@ -40,6 +40,9 @@ pub struct MeasurementDto {
     pub bph: u32,
     pub lift_angle_deg: f64,
     pub beats_detected: usize,
+    pub beats_used: usize,
+    pub beats_expected: usize,
+    pub quality: f64,
     pub sample_rate: u32,
     pub device_name: String,
     pub clip_seconds: f64,
@@ -99,17 +102,32 @@ pub fn record_and_analyze(
     let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
 
     let cfg = AnalysisConfig::new(bph, lift_angle_deg);
-    let measurement = analyze(&samples, sample_rate, &cfg);
     let degraded_input = is_degraded(sample_rate);
-    let warning = build_warning(degraded_input, peak_level);
+    let capture_warning = build_warning(degraded_input, peak_level);
 
-    let m = measurement.ok_or_else(|| {
-        warning.clone().unwrap_or_else(|| {
+    let m = analyze(&samples, sample_rate, &cfg).ok_or_else(|| {
+        capture_warning.clone().unwrap_or_else(|| {
             "could not detect a steady tick — check microphone placement, the \
              selected bph, and that the watch is running"
                 .to_string()
         })
     })?;
+
+    let mut warnings = Vec::new();
+    if let Some(w) = capture_warning {
+        warnings.push(w);
+    }
+    if m.quality < 0.6 {
+        warnings.push(format!(
+            "Low confidence ({:.0}%): used {} of ~{} expected ticks. Press the \
+             microphone firmly against the watch, reduce background noise, and \
+             confirm the beat rate (bph).",
+            m.quality * 100.0,
+            m.beats_used,
+            m.beats_expected
+        ));
+    }
+    let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
 
     Ok(MeasurementDto {
         rate_s_per_day: m.rate_s_per_day,
@@ -118,6 +136,9 @@ pub fn record_and_analyze(
         bph: m.bph,
         lift_angle_deg: m.lift_angle_deg,
         beats_detected: m.beats_detected,
+        beats_used: m.beats_used,
+        beats_expected: m.beats_expected,
+        quality: m.quality,
         sample_rate,
         device_name: actual_name,
         clip_seconds: seconds,

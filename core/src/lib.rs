@@ -6,6 +6,8 @@
 //! which is the cornerstone of the project's test strategy (see
 //! `docs/TEST_PLAN.md`).
 
+pub mod synth;
+
 /// Crate version, surfaced to the app for a health check.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

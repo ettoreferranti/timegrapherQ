@@ -27,6 +27,10 @@ amplitude) has automated tests using a **synthetic escapement signal generator**
 - **Synthetic signals:** generated with configurable bph, rate offset, beat
   error, amplitude (→ Δt via the amplitude formula), waveform of the
   tick/tock transients, and additive noise at controlled SNR.
+  **Implemented** in `core::synth` (`SignalSpec` → `synth_escapement` →
+  `SynthSignal`), with a seeded dependency-free PRNG for reproducibility. The
+  generator itself is unit-tested; from M1-6 onward the analyzer is tested by
+  feeding it these signals and asserting recovery of the known parameters.
 - **Reference recordings:** a small set of real clips (clean and noisy) stored in
   `tests/fixtures/` (allow-listed in `.gitignore`), each with documented expected
   ranges. No personal data; small files only.

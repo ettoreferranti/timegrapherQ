@@ -26,7 +26,7 @@
 ## Milestone M1 — Core measurement accuracy *(highest priority)*
 *Goal: trustworthy rate / beat error / amplitude from a recorded clip, with noise filtering. Proven against ground truth before any UI polish.*
 
-- [ ] **M1-1** Synthetic signal generator (test tool): produce escapement-like audio with known bph, rate, beat error, amplitude, and configurable noise/SNR. *(supports TEST_PLAN)*
+- [x] **M1-1** Synthetic signal generator (`core::synth`): escapement-like audio with known bph, rate, beat error, amplitude, and seeded noise; returns ground-truth beat onsets + impulse spacing. 7 unit tests covering sample count, beat count, rate scaling, beat-error alternation, amplitude spacing, transient energy, and deterministic noise. *(supports TEST_PLAN; done 2026-06-09)*
 - [ ] **M1-2** Audio capture via `cpal`: enumerate devices, open mono stream, ring buffer. *(FR-A1)*
 - [ ] **M1-3** DSP pre-filter (DC removal + band-pass) and energy envelope. *(FR-M1)*
 - [ ] **M1-4** Onset/transient detection with adaptive threshold. *(FR-M1)*

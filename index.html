@@ -10,11 +10,90 @@
 
   <body>
     <main class="container">
-      <h1>TimegrapherQ</h1>
-      <p class="tagline">Software timegrapher for mechanical watches.</p>
-      <p id="health" class="health" aria-live="polite">
-        Connecting to backend…
-      </p>
+      <header>
+        <h1>TimegrapherQ</h1>
+        <p class="tagline">Measure your mechanical watch's accuracy.</p>
+      </header>
+
+      <section class="panel">
+        <div class="field">
+          <label for="device">Microphone</label>
+          <div class="row">
+            <select id="device"></select>
+            <button
+              id="refresh"
+              type="button"
+              class="ghost"
+              title="Rescan devices"
+            >
+              ↻
+            </button>
+          </div>
+          <p id="device-note" class="note"></p>
+        </div>
+
+        <div class="grid">
+          <div class="field">
+            <label for="bph">Beat rate (bph)</label>
+            <select id="bph">
+              <option value="18000">18000</option>
+              <option value="19800">19800</option>
+              <option value="21600">21600</option>
+              <option value="25200">25200</option>
+              <option value="28800" selected>28800</option>
+              <option value="36000">36000</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="lift">Lift angle (°)</label>
+            <input
+              id="lift"
+              type="number"
+              value="52"
+              min="10"
+              max="120"
+              step="0.5"
+            />
+          </div>
+          <div class="field">
+            <label for="duration">Duration (s)</label>
+            <input
+              id="duration"
+              type="number"
+              value="20"
+              min="1"
+              max="120"
+              step="1"
+            />
+          </div>
+        </div>
+
+        <button id="record" type="button" class="primary">
+          Record &amp; measure
+        </button>
+        <p id="status" class="status" aria-live="polite"></p>
+      </section>
+
+      <section id="result" class="panel result hidden">
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-value" id="m-rate">—</span>
+            <span class="metric-label">Rate</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="m-beaterror">—</span>
+            <span class="metric-label">Beat error</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="m-amplitude">—</span>
+            <span class="metric-label">Amplitude</span>
+          </div>
+        </div>
+        <p id="result-meta" class="note"></p>
+        <p id="warning" class="warning hidden" aria-live="polite"></p>
+      </section>
+
+      <footer id="footer" class="footer"></footer>
     </main>
   </body>
 </html>

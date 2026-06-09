@@ -87,19 +87,38 @@ with **Milestone M1: core measurement accuracy** (see the backlog).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the rationale.
 
-## Building (placeholder)
+## Building & running
 
-> The application is not yet scaffolded. Once M1 begins this section will list
-> the exact prerequisites and commands. The expected toolchain is:
->
-> - Rust (stable) + the Tauri 2 prerequisites for your OS
-> - Node.js (LTS) + a package manager (pnpm)
->
-> ```sh
-> pnpm install        # install frontend deps
-> pnpm tauri dev      # run the app in development
-> pnpm tauri build    # produce a release bundle
-> ```
+Prerequisites:
+
+- **Rust** (stable) + the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your OS
+- **Node.js** (LTS) + **pnpm**
+
+```sh
+pnpm install        # install frontend deps
+pnpm tauri dev      # run the app in development
+pnpm tauri build    # produce a release bundle
+```
+
+On first launch, grant **microphone permission** when prompted (on macOS,
+System Settings → Privacy & Security → Microphone).
+
+### Try a measurement
+
+1. Select your microphone and hold/press it against the watch.
+2. Set the movement's **beat rate (bph)** and **lift angle** (commonly 52°).
+3. Click **Record & measure**.
+
+A wired or contact microphone gives the cleanest reading; Bluetooth mics (e.g.
+AirPods) often switch to a low-quality profile and the app will warn you.
+
+### Tests & checks
+
+```sh
+cargo test --all                       # Rust unit tests (core DSP + helpers)
+cargo clippy --all-targets -- -D warnings
+pnpm lint && pnpm typecheck && pnpm test   # frontend
+```
 
 ## Contributing
 

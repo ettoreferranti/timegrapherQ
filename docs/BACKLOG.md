@@ -27,7 +27,7 @@
 *Goal: trustworthy rate / beat error / amplitude from a recorded clip, with noise filtering. Proven against ground truth before any UI polish.*
 
 - [x] **M1-1** Synthetic signal generator (`core::synth`): escapement-like audio with known bph, rate, beat error, amplitude, and seeded noise; returns ground-truth beat onsets + impulse spacing. 7 unit tests covering sample count, beat count, rate scaling, beat-error alternation, amplitude spacing, transient energy, and deterministic noise. *(supports TEST_PLAN; done 2026-06-09)*
-- [ ] **M1-2** Audio capture via `cpal`: enumerate devices, open mono stream, ring buffer. *(FR-A1)*
+- [x] **M1-2** Audio capture via `cpal` (`src-tauri/src/audio.rs`): enumerate input devices, open a mono stream (downmixing/converting F32/I16/U16), capture a fixed-duration buffer on a blocking thread. *(FR-A1; done 2026-06-09. Streaming ring buffer for live mode deferred to M3.)*
 - [x] **M1-3** DSP band-pass (RBJ biquad) + rectified one-pole envelope (`core::dsp`). *(FR-M1; done 2026-06-09)*
 - [x] **M1-4** Onset/transient detection (per-run argmax above relative threshold + refractory) (`core::dsp::detect_onsets`). *(FR-M1; done 2026-06-09)*
 - [x] **M1-5** Beat segmentation (group impulse pairs into beats) + period estimate from supplied bph (`core::measure::group_beats`). *(FR-M1, FR-A4; done 2026-06-09)*
@@ -39,9 +39,9 @@
   - AC met: within ±3° (tested at 220, 270, 280, 290°).
 - [ ] **M1-9** Outlier rejection + quality/confidence score; report accepted/rejected beats. *(FR-M5)*
   - AC: maintains accuracy targets at a defined SNR; degrades gracefully and lowers confidence below it.
-- [ ] **M1-10** Record-then-analyse command: capture N seconds, return a result object. *(FR-M6)*
-- [ ] **M1-11** Low-sample-rate / degraded-device warning. *(FR-A3)*
-- [ ] **M1-12** Minimal Measure UI: device picker, VU meter, bph + lift-angle input, record button, result display. *(FR-A1, FR-A2, FR-A5)*
+- [x] **M1-10** `record_and_analyze` Tauri command: capture N seconds, run `core::analyze`, return a `MeasurementDto` (metrics + capture context). Runs on a blocking thread to keep the UI responsive. *(FR-M6; done 2026-06-09)*
+- [x] **M1-11** Low-sample-rate / degraded-device warning (≤24 kHz), plus quiet/clipping advisories. macOS `NSMicrophoneUsageDescription` added. *(FR-A3; done 2026-06-09)*
+- [x] **M1-12** Minimal Measure UI: device picker, bph preset + lift-angle + duration inputs, record button, result card (rate/beat error/amplitude + context + warnings). *(FR-A1, FR-A5; done 2026-06-09. Live VU meter (FR-A2) deferred to M3 live trace.)*
 
 ## Milestone M2 — Collection & persistence
 *Goal: save and revisit measurements per watch.*

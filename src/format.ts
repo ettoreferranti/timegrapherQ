@@ -16,3 +16,13 @@ export function formatRate(secondsPerDay: number, decimals = 1): string {
   const sign = secondsPerDay > 0 ? "+" : secondsPerDay < 0 ? "−" : "±";
   return `${sign}${Math.abs(secondsPerDay).toFixed(decimals)} s/d`;
 }
+
+/** Beat error in milliseconds, e.g. `0.4 ms`. */
+export function formatBeatError(ms: number): string {
+  return `${ms.toFixed(1)} ms`;
+}
+
+/** Amplitude in whole degrees, or an em dash when unavailable. */
+export function formatAmplitude(deg: number | null): string {
+  return deg == null ? "—" : `${Math.round(deg)}°`;
+}

@@ -236,10 +236,13 @@ timegrapherq/
 │       ├── dsp.rs          #   band-pass biquad, envelope, onset detection
 │       └── measure.rs      #   analyze(): onsets → rate / beat error / amplitude
 ├── src-tauri/              # timegrapherq: Tauri app shell
-│   ├── Cargo.toml          #   depends on timegrapherq-core
+│   ├── Cargo.toml          #   depends on timegrapherq-core, cpal
 │   ├── tauri.conf.json     #   hardened CSP, withGlobalTauri off
+│   ├── Info.plist          #   macOS NSMicrophoneUsageDescription
 │   ├── capabilities/default.json
-│   └── src/{main.rs,lib.rs}#   `health` command (core integration point)
+│   └── src/
+│       ├── main.rs / lib.rs#   commands: health, list_input_devices, record_and_analyze
+│       └── audio.rs        #   cpal capture + record-then-analyse + warnings
 ├── .github/workflows/ci.yml + .github/dependabot.yml
 └── docs/                   # REQUIREMENTS / ARCHITECTURE / BACKLOG / TEST_PLAN
 ```

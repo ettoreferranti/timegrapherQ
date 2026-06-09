@@ -1,8 +1,10 @@
 //! TimegrapherQ desktop application shell.
 //!
 //! The heavy lifting (DSP / measurement) lives in the `timegrapherq-core`
-//! crate. This module wires that core to the UI via Tauri commands and owns
-//! audio I/O and storage as those land in later milestones.
+//! crate; audio capture lives in [`audio`]. This module exposes them to the UI
+//! as Tauri commands.
+
+mod audio;
 
 use serde::Serialize;
 
@@ -13,7 +15,7 @@ struct Health {
 }
 
 /// Lightweight health check so the frontend can confirm the Rust backend and
-/// the DSP core are reachable. Expanded with real capabilities in M1+.
+/// the DSP core are reachable.
 #[tauri::command]
 fn health() -> Health {
     Health {
@@ -22,11 +24,38 @@ fn health() -> Health {
     }
 }
 
+/// List available microphone input devices.
+#[tauri::command]
+fn list_input_devices() -> Vec<audio::DeviceInfo> {
+    audio::list_devices()
+}
+
+/// Record from the given device (or default) for `seconds`, then analyse.
+///
+/// Runs on a blocking thread so the UI stays responsive during the recording.
+#[tauri::command]
+async fn record_and_analyze(
+    device_name: Option<String>,
+    bph: u32,
+    lift_angle_deg: f64,
+    seconds: f64,
+) -> Result<audio::MeasurementDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        audio::record_and_analyze(device_name, bph, lift_angle_deg, seconds)
+    })
+    .await
+    .map_err(|e| format!("recording task failed: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![health])
+        .invoke_handler(tauri::generate_handler![
+            health,
+            list_input_devices,
+            record_and_analyze
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

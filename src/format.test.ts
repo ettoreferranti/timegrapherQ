@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatRate, formatVersions } from "./format";
+import {
+  formatAmplitude,
+  formatBeatError,
+  formatRate,
+  formatVersions,
+} from "./format";
 
 describe("formatVersions", () => {
   it("renders app and core versions", () => {
@@ -20,5 +25,21 @@ describe("formatRate", () => {
 
   it("uses ± for an exactly-zero rate", () => {
     expect(formatRate(0)).toBe("±0.0 s/d");
+  });
+});
+
+describe("formatBeatError", () => {
+  it("renders one decimal with unit", () => {
+    expect(formatBeatError(0.42)).toBe("0.4 ms");
+  });
+});
+
+describe("formatAmplitude", () => {
+  it("rounds to whole degrees", () => {
+    expect(formatAmplitude(271.6)).toBe("272°");
+  });
+
+  it("shows a dash when unavailable", () => {
+    expect(formatAmplitude(null)).toBe("—");
   });
 });

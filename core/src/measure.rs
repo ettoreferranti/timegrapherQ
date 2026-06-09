@@ -78,6 +78,11 @@ pub struct Measurement {
     pub beats_used: usize,
     /// Beats expected for the clip duration at this bph.
     pub beats_expected: usize,
+    /// Strength of the dominant envelope periodicity in [0, 1]; low means the
+    /// signal is not a steady tick (noise).
+    pub periodicity: f64,
+    /// Beat frequency implied by the dominant periodicity (bph), if any.
+    pub detected_bph: Option<f64>,
     /// Confidence in [0, 1]: how much to trust this measurement.
     pub quality: f64,
 }
@@ -102,6 +107,7 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
 
     let filtered = dsp::bandpass(samples, sr, cfg.bandpass_center_hz, cfg.bandpass_q);
     let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
+    let (periodicity, detected_bph) = dominant_periodicity(&env, sr);
     let reference = dsp::percentile(&env, cfg.reference_percentile);
     let threshold = cfg.threshold_ratio * reference;
     let onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s);
@@ -146,7 +152,13 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
     let rate_s_per_day = 86_400.0 * (nominal_period / measured_period - 1.0);
     let beat_error_ms = beat_error_ms_from_beats(&kept);
     let amplitude_deg = amplitude_from_beats(&kept, cfg);
-    let quality = confidence(&kept, beats_expected, measured_period, nominal_period);
+    let quality = confidence(
+        &kept,
+        beats_expected,
+        measured_period,
+        nominal_period,
+        periodicity,
+    );
 
     Some(Measurement {
         rate_s_per_day,
@@ -157,8 +169,32 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
         beats_detected,
         beats_used: kept.len(),
         beats_expected,
+        periodicity,
+        detected_bph,
         quality,
     })
+}
+
+/// Estimate the dominant envelope periodicity (0–1) and the bph it implies,
+/// from a precomputed envelope and its sample rate.
+///
+/// The envelope is decimated to keep the autocorrelation sweep cheap, then we
+/// search the lag range spanning plausible beat periods (~16000–80000 bph).
+/// Exposed so the app can report periodicity even when [`analyze`] declines to
+/// produce a measurement (the "is this just noise?" diagnostic).
+pub fn dominant_periodicity(env: &[f64], sr: f64) -> (f64, Option<f64>) {
+    let factor = (sr / 2400.0).round().max(1.0) as usize;
+    let denv = dsp::decimate_mean(env, factor);
+    let dsr = sr / factor as f64;
+    let min_lag = (dsr * 0.045).round() as usize; // ~80000 bph
+    let max_lag = (dsr * 0.225).round() as usize; // ~16000 bph
+    match dsp::dominant_period(&denv, min_lag, max_lag) {
+        Some((lag, strength)) if lag > 0 => {
+            let beat_period = lag as f64 / dsr;
+            (strength.max(0.0), Some(3600.0 / beat_period))
+        }
+        _ => (0.0, None),
+    }
 }
 
 /// Group consecutive onsets into beats. Onsets within `beat_gap_ratio` of the
@@ -253,13 +289,21 @@ fn amplitude_from_beats(beats: &[Beat], cfg: &AnalysisConfig) -> Option<f64> {
 /// Confidence in [0, 1] combining how many of the expected beats survived and
 /// how closely the measured period matches the nominal one (a sanity check
 /// that we locked onto a real, periodic tick rather than noise).
-fn confidence(kept: &[Beat], beats_expected: usize, measured_period: f64, nominal: f64) -> f64 {
+fn confidence(
+    kept: &[Beat],
+    beats_expected: usize,
+    measured_period: f64,
+    nominal: f64,
+    periodicity: f64,
+) -> f64 {
     if beats_expected == 0 {
         return 0.0;
     }
     let coverage = (kept.len() as f64 / beats_expected as f64).clamp(0.0, 1.0);
     let period_factor = (1.0 - (measured_period / nominal - 1.0).abs() / 0.2).clamp(0.0, 1.0);
-    (coverage * period_factor).clamp(0.0, 1.0)
+    // Periodicity is the strongest discriminator of tick-vs-noise; gate on it.
+    let periodicity_factor = (periodicity / 0.4).clamp(0.0, 1.0);
+    (coverage * period_factor * periodicity_factor).clamp(0.0, 1.0)
 }
 
 /// Median of a slice (sorts in place). Returns 0.0 for an empty slice.
@@ -285,6 +329,20 @@ mod tests {
         let sig = synth_escapement(spec);
         let cfg = AnalysisConfig::new(spec.bph, spec.lift_angle_deg);
         analyze(&sig.samples, sig.sample_rate, &cfg).expect("a measurement")
+    }
+
+    #[test]
+    fn periodicity_high_and_bph_detected_on_clean_signal() {
+        let m = analyze_spec(&SignalSpec {
+            duration_s: 10.0,
+            ..Default::default()
+        });
+        assert!(m.periodicity > 0.8, "periodicity={}", m.periodicity);
+        let bph = m.detected_bph.expect("detected bph");
+        assert!(
+            (bph - 28_800.0).abs() < 28_800.0 * 0.02,
+            "detected_bph={bph}"
+        );
     }
 
     #[test]

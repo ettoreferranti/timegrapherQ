@@ -45,6 +45,8 @@ pub struct MeasurementDto {
     pub beats_detected: usize,
     pub beats_used: usize,
     pub beats_expected: usize,
+    pub periodicity: f64,
+    pub detected_bph: Option<f64>,
     pub quality: f64,
     pub sample_rate: u32,
     pub device_name: String,
@@ -140,6 +142,9 @@ pub fn record_and_analyze(
                     m.beats_expected,
                 ));
             }
+            if let Some(msg) = bph_mismatch_message(stats.periodicity, stats.detected_bph, bph) {
+                warnings.push(msg);
+            }
             MeasurementDto {
                 rate_s_per_day: m.rate_s_per_day,
                 beat_error_ms: m.beat_error_ms,
@@ -172,6 +177,8 @@ pub fn record_and_analyze(
         peak_level,
         rms_level: stats.rms,
         raw_onsets: stats.raw_onsets,
+        periodicity: stats.periodicity,
+        detected_bph: stats.detected_bph,
         degraded_input,
         recording_path,
         warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
@@ -196,6 +203,8 @@ fn base_dto(
         beats_detected: 0,
         beats_used: 0,
         beats_expected: 0,
+        periodicity: 0.0,
+        detected_bph: None,
         quality: 0.0,
         sample_rate,
         device_name: device_name.to_string(),
@@ -215,6 +224,8 @@ fn base_dto(
 struct SignalStats {
     rms: f32,
     raw_onsets: usize,
+    periodicity: f64,
+    detected_bph: Option<f64>,
 }
 
 fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> SignalStats {
@@ -232,8 +243,14 @@ fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Sign
     let reference = dsp::percentile(&env, cfg.reference_percentile);
     let threshold = cfg.threshold_ratio * reference;
     let raw_onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s).len();
+    let (periodicity, detected_bph) = timegrapherq_core::measure::dominant_periodicity(&env, sr);
 
-    SignalStats { rms, raw_onsets }
+    SignalStats {
+        rms,
+        raw_onsets,
+        periodicity,
+        detected_bph,
+    }
 }
 
 fn expected_beats(n_samples: usize, sample_rate: u32, bph: u32) -> usize {
@@ -352,6 +369,29 @@ fn build_warning(degraded: bool, peak: f32) -> Option<String> {
     }
 }
 
+/// Warn when a confidently-periodic signal implies a different bph than the
+/// one selected — a common cause of nonsense rate readings.
+fn bph_mismatch_message(
+    periodicity: f64,
+    detected_bph: Option<f64>,
+    selected: u32,
+) -> Option<String> {
+    let detected = detected_bph?;
+    if periodicity < 0.5 {
+        return None; // not periodic enough to trust the estimate
+    }
+    let rel = (detected - f64::from(selected)).abs() / f64::from(selected);
+    if rel > 0.08 {
+        Some(format!(
+            "Detected a tick near {:.0} bph, but {} bph is selected — check the \
+             beat-rate setting (the rate reading depends on it).",
+            detected, selected
+        ))
+    } else {
+        None
+    }
+}
+
 fn low_confidence_message(quality: f64, used: usize, expected: usize) -> String {
     format!(
         "Low confidence ({:.0}%): used {} of ~{} expected ticks. Press the \
@@ -440,6 +480,18 @@ mod tests {
         assert!(build_warning(true, 0.3).unwrap().contains("sample rate"));
         assert!(build_warning(false, 0.001).unwrap().contains("quiet"));
         assert!(build_warning(false, 1.0).unwrap().contains("clipping"));
+    }
+
+    #[test]
+    fn bph_mismatch_warns_only_when_periodic_and_different() {
+        // Periodic and matching: no warning.
+        assert!(bph_mismatch_message(0.9, Some(28_800.0), 28_800).is_none());
+        // Periodic and clearly different: warn.
+        assert!(bph_mismatch_message(0.9, Some(21_600.0), 28_800).is_some());
+        // Not periodic enough: stay quiet even if different.
+        assert!(bph_mismatch_message(0.3, Some(21_600.0), 28_800).is_none());
+        // No estimate: no warning.
+        assert!(bph_mismatch_message(0.9, None, 28_800).is_none());
     }
 
     #[test]

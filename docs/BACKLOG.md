@@ -38,7 +38,8 @@
 - [x] **M1-8** Amplitude from median impulse spacing Δt, lift angle, bph. *(FR-M4; done 2026-06-09)*
   - AC met: within ±3° (tested at 220, 270, 280, 290°).
 - [x] **M1-9** Robust detection + outlier rejection + confidence score. *(FR-M5; done 2026-06-09)*
-  - Percentile-based detection threshold (robust to loud outliers); beat numbers reconstructed from timing so missed beats no longer corrupt the rate fit; residual-based outlier rejection; `quality` score (0–1) from coverage × period match; reports beats detected/used/expected.
+  - Percentile-based detection threshold (robust to loud outliers); beat numbers reconstructed from timing so missed beats no longer corrupt the rate fit; residual-based outlier rejection; reports beats detected/used/expected.
+  - **Autocorrelation periodicity** (`dsp::dominant_period` on a decimated envelope): `quality` = coverage × period match × periodicity, so noise (no periodicity) scores ~0 while a real tick scores ~1. Confirmed on a real noise recording: periodicity ≈ 0.13 vs ≈ 0.98 for a clean tick.
   - AC met: rate within ±1 s/day under heavier noise (SNR ~ few) with quality > 0.6; pure noise yields low confidence / no false reading.
 - [x] **M1-10** `record_and_analyze` Tauri command: capture N seconds, run `core::analyze`, return a `MeasurementDto` (metrics + capture context). Runs on a blocking thread to keep the UI responsive. *(FR-M6; done 2026-06-09)*
 - [x] **M1-11** Low-sample-rate / degraded-device warning (≤24 kHz), plus quiet/clipping advisories. macOS `NSMicrophoneUsageDescription` added. *(FR-A3; done 2026-06-09)*
@@ -61,7 +62,7 @@
 - [ ] **M3-1** Stream incremental beat events from the analysis thread via Tauri events. *(FR-M7)*
 - [ ] **M3-2** Canvas scrolling two-line trace (slope=rate, gap=beat error, scatter=noise). *(FR-M7)*
 - [ ] **M3-3** Live numeric rate / beat error / amplitude readouts. *(FR-M8)*
-- [ ] **M3-4** bph auto-detect. *(FR-M9, FR-A4)*
+- [~] **M3-4** bph auto-detect. *(FR-M9, FR-A4)* — Partial: `detected_bph` from autocorrelation is computed and shown as a diagnostic, and a mismatch with the selected bph warns the user. TODO: optionally drive the measurement from the detected bph / snap to standard rates.
 
 ## Milestone M4 — Visualisation, comparison & export
 *Goal: insight over time and shareable output.*

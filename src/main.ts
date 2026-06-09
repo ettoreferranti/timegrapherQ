@@ -22,6 +22,8 @@ interface MeasurementDto {
   beats_detected: number;
   beats_used: number;
   beats_expected: number;
+  periodicity: number;
+  detected_bph: number | null;
   quality: number;
   sample_rate: number;
   device_name: string;
@@ -86,6 +88,10 @@ function showMetrics(m: MeasurementDto): void {
   // Diagnostics line: helps tell a capture problem from a maths problem.
   const diag = el<HTMLParagraphElement>("diag");
   const parts = [
+    `periodicity ${m.periodicity.toFixed(2)}`,
+    m.detected_bph != null
+      ? `detected ~${Math.round(m.detected_bph)} bph`
+      : "no periodic tick",
     `${m.raw_onsets} transients (~${m.beats_expected} expected)`,
     `peak ${m.peak_level.toFixed(3)}`,
     `rms ${m.rms_level.toFixed(4)}`,

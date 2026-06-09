@@ -129,6 +129,50 @@ pub fn percentile(values: &[f64], p: f64) -> f64 {
     v[idx]
 }
 
+/// Decimate by averaging non-overlapping blocks of `factor` samples. Used to
+/// shrink the envelope before autocorrelation so a full lag sweep is cheap.
+pub fn decimate_mean(signal: &[f64], factor: usize) -> Vec<f64> {
+    if factor <= 1 {
+        return signal.to_vec();
+    }
+    signal
+        .chunks(factor)
+        .map(|c| c.iter().sum::<f64>() / c.len() as f64)
+        .collect()
+}
+
+/// Find the lag in `[min_lag, max_lag]` with the strongest normalized
+/// autocorrelation of `signal`, returning `(lag, strength)` where strength is
+/// in roughly `[-1, 1]`. A strong peak means the signal is periodic at that lag
+/// — the acid test for "is this a ticking watch or just noise?".
+pub fn dominant_period(signal: &[f64], min_lag: usize, max_lag: usize) -> Option<(usize, f64)> {
+    let n = signal.len();
+    if min_lag == 0 || min_lag > max_lag || max_lag >= n {
+        return None;
+    }
+    let mean = signal.iter().sum::<f64>() / n as f64;
+    let dev: Vec<f64> = signal.iter().map(|&x| x - mean).collect();
+    let den: f64 = dev.iter().map(|d| d * d).sum();
+    if den <= 0.0 {
+        return None;
+    }
+
+    let mut best_lag = min_lag;
+    let mut best = f64::MIN;
+    for lag in min_lag..=max_lag {
+        let mut num = 0.0;
+        for i in 0..n - lag {
+            num += dev[i] * dev[i + lag];
+        }
+        let r = num / den;
+        if r > best {
+            best = r;
+            best_lag = lag;
+        }
+    }
+    Some((best_lag, best))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +230,40 @@ mod tests {
         env[150] = 0.9; // ~1 ms later, inside a 3 ms refractory window
         let onsets = detect_onsets(&env, fs, 0.3, 0.003);
         assert_eq!(onsets.len(), 1);
+    }
+
+    #[test]
+    fn dominant_period_finds_periodic_lag() {
+        // A spike train every 100 samples should peak at lag 100.
+        let mut s = vec![0.0; 2000];
+        let mut i = 0;
+        while i < 2000 {
+            s[i] = 1.0;
+            i += 100;
+        }
+        let (lag, strength) = dominant_period(&s, 50, 200).unwrap();
+        assert_eq!(lag, 100);
+        assert!(strength > 0.5, "strength={strength}");
+    }
+
+    #[test]
+    fn dominant_period_weak_on_noise() {
+        // Decorrelated pseudo-noise (SplitMix64 hash per index): no periodicity.
+        let s: Vec<f64> = (0..4000u64)
+            .map(|i| {
+                let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                ((z ^ (z >> 31)) % 2000) as f64 / 1000.0 - 1.0
+            })
+            .collect();
+        let (_, strength) = dominant_period(&s, 50, 400).unwrap();
+        assert!(strength < 0.5, "noise strength too high: {strength}");
+    }
+
+    #[test]
+    fn decimate_mean_averages_blocks() {
+        assert_eq!(decimate_mean(&[1.0, 3.0, 5.0, 7.0], 2), vec![2.0, 6.0]);
     }
 
     #[test]

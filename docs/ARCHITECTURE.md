@@ -71,9 +71,13 @@ Pipeline (record-then-analyse and live share this core):
    report the difference in **ms**.
 6. **Amplitude** — measure within-beat transient spacing `Δt`; apply
    `A = L / (2·sin(π·Δt/T))`, `T = 7200/bph`, `L` = lift angle.
-7. **Quality / outlier rejection** — robust statistics (e.g. median/MAD),
-   discard beats failing consistency checks, output a **confidence score** and
-   the count of accepted vs rejected beats.
+7. **Periodicity check** — autocorrelation of a decimated envelope finds the
+   dominant beat period (and an implied bph). Its strength (0–1) is the primary
+   discriminator of a real tick vs noise.
+8. **Quality / outlier rejection** — reconstruct beat numbers from timing
+   (robust to missed beats), reject beats with large fit residuals, and output a
+   **confidence score** = coverage × period-match × periodicity, plus the count
+   of beats detected/used/expected.
 
 The core is a **pure library crate** (no Tauri, no I/O) so it can be unit-tested
 against synthetic and recorded fixtures (see TEST_PLAN).

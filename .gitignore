@@ -1,0 +1,66 @@
+# ---- Rust / Cargo (Tauri backend) ----
+/target/
+**/target/
+*.rs.bk
+Cargo.lock.orig
+
+# ---- Node / frontend ----
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+.eslintcache
+
+# ---- Tauri build artifacts ----
+/src-tauri/target/
+/src-tauri/gen/
+*.app
+*.dmg
+*.AppImage
+*.deb
+*.msi
+*.exe
+
+# ---- Environment & secrets (do NOT commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+secrets.*
+
+# ---- Local app data / recordings (never commit user data) ----
+/data/
+*.sqlite
+*.sqlite3
+*.db
+recordings/
+*.wav
+*.flac
+# Allow small reference fixtures used by tests
+!tests/fixtures/**/*.wav
+!tests/fixtures/**/*.flac
+
+# ---- OS / editor cruft ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+*.swp
+*~
+
+# ---- Logs & coverage ----
+*.log
+npm-debug.log*
+coverage/
+*.profraw

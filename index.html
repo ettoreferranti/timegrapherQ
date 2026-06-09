@@ -12,91 +12,249 @@
     <main class="container">
       <header>
         <h1>TimegrapherQ</h1>
-        <p class="tagline">Measure your mechanical watch's accuracy.</p>
+        <nav class="tabs">
+          <button class="tab active" data-view="measure">Measure</button>
+          <button class="tab" data-view="collection">Collection</button>
+          <button class="tab" data-view="settings">Settings</button>
+        </nav>
       </header>
 
-      <section class="panel">
-        <div class="field">
-          <label for="device">Microphone</label>
-          <div class="row">
-            <select id="device"></select>
-            <button
-              id="refresh"
-              type="button"
-              class="ghost"
-              title="Rescan devices"
-            >
-              ↻
-            </button>
-          </div>
-          <p id="device-note" class="note"></p>
-        </div>
-
-        <div class="grid">
+      <!-- ===== MEASURE ===== -->
+      <section id="view-measure" class="view">
+        <section class="panel">
           <div class="field">
-            <label for="bph">Beat rate (bph)</label>
-            <select id="bph">
-              <option value="18000">18000</option>
-              <option value="19800">19800</option>
-              <option value="21600">21600</option>
-              <option value="25200">25200</option>
-              <option value="28800" selected>28800</option>
-              <option value="36000">36000</option>
-            </select>
+            <label for="device">Microphone</label>
+            <div class="row">
+              <select id="device"></select>
+              <button
+                id="refresh"
+                type="button"
+                class="ghost"
+                title="Rescan devices"
+              >
+                ↻
+              </button>
+            </div>
+            <p id="device-note" class="note"></p>
+          </div>
+
+          <div class="grid">
+            <div class="field">
+              <label for="bph">Beat rate (bph)</label>
+              <select id="bph">
+                <option value="18000">18000</option>
+                <option value="19800">19800</option>
+                <option value="21600">21600</option>
+                <option value="25200">25200</option>
+                <option value="28800" selected>28800</option>
+                <option value="36000">36000</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="lift">Lift angle (°)</label>
+              <input
+                id="lift"
+                type="number"
+                value="52"
+                min="10"
+                max="120"
+                step="0.5"
+              />
+            </div>
+            <div class="field">
+              <label for="duration">Duration (s)</label>
+              <input
+                id="duration"
+                type="number"
+                value="20"
+                min="1"
+                max="120"
+                step="1"
+              />
+            </div>
+          </div>
+
+          <label class="checkbox">
+            <input id="save" type="checkbox" />
+            Save recording (WAV) for diagnostics
+          </label>
+
+          <button id="record" type="button" class="primary">
+            Record &amp; measure
+          </button>
+          <p id="status" class="status" aria-live="polite"></p>
+        </section>
+
+        <section id="result" class="panel result hidden">
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-value" id="m-rate">—</span>
+              <span class="metric-label">Rate</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="m-beaterror">—</span>
+              <span class="metric-label">Beat error</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="m-amplitude">—</span>
+              <span class="metric-label">Amplitude</span>
+            </div>
+          </div>
+          <p id="result-meta" class="note"></p>
+          <p id="diag" class="note"></p>
+          <p id="warning" class="warning hidden" aria-live="polite"></p>
+        </section>
+
+        <section id="save-panel" class="panel hidden">
+          <h2>Save to collection</h2>
+          <div class="field">
+            <label for="save-watch">Watch</label>
+            <select id="save-watch"></select>
+            <p id="save-watch-note" class="note"></p>
+          </div>
+          <div class="grid">
+            <div class="field">
+              <label for="save-position">Position</label>
+              <select id="save-position">
+                <option value="">—</option>
+                <option value="DU">Dial up</option>
+                <option value="DD">Dial down</option>
+                <option value="CU">Crown up</option>
+                <option value="CD">Crown down</option>
+                <option value="CL">Crown left</option>
+                <option value="CR">Crown right</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="save-temp">Temperature (°C)</label>
+              <input id="save-temp" type="number" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="save-power">Power state</label>
+              <input id="save-power" placeholder="e.g. full wind" />
+            </div>
           </div>
           <div class="field">
-            <label for="lift">Lift angle (°)</label>
-            <input
-              id="lift"
-              type="number"
-              value="52"
-              min="10"
-              max="120"
-              step="0.5"
-            />
+            <label for="save-notes">Notes</label>
+            <input id="save-notes" />
           </div>
-          <div class="field">
-            <label for="duration">Duration (s)</label>
-            <input
-              id="duration"
-              type="number"
-              value="20"
-              min="1"
-              max="120"
-              step="1"
-            />
-          </div>
-        </div>
-
-        <label class="checkbox">
-          <input id="save" type="checkbox" />
-          Save recording (WAV) for diagnostics
-        </label>
-
-        <button id="record" type="button" class="primary">
-          Record &amp; measure
-        </button>
-        <p id="status" class="status" aria-live="polite"></p>
+          <label class="checkbox">
+            <input id="save-keep-clip" type="checkbox" />
+            Keep the recorded clip with this test (requires "Save recording")
+          </label>
+          <button id="save-test" type="button" class="primary">
+            Save measurement
+          </button>
+          <p id="save-status" class="status" aria-live="polite"></p>
+        </section>
       </section>
 
-      <section id="result" class="panel result hidden">
-        <div class="metrics">
-          <div class="metric">
-            <span class="metric-value" id="m-rate">—</span>
-            <span class="metric-label">Rate</span>
+      <!-- ===== COLLECTION ===== -->
+      <section id="view-collection" class="view hidden">
+        <section class="panel">
+          <div class="row between">
+            <h2>Watches</h2>
+            <button id="add-watch" type="button" class="ghost">
+              + Add watch
+            </button>
           </div>
-          <div class="metric">
-            <span class="metric-value" id="m-beaterror">—</span>
-            <span class="metric-label">Beat error</span>
+          <ul id="watch-list" class="list"></ul>
+        </section>
+
+        <section id="watch-form-panel" class="panel hidden">
+          <h2 id="watch-form-title">Add watch</h2>
+          <div class="field">
+            <label for="w-name">Name *</label>
+            <input id="w-name" />
           </div>
-          <div class="metric">
-            <span class="metric-value" id="m-amplitude">—</span>
-            <span class="metric-label">Amplitude</span>
+          <div class="grid">
+            <div class="field">
+              <label for="w-brand">Brand</label><input id="w-brand" />
+            </div>
+            <div class="field">
+              <label for="w-model">Model</label><input id="w-model" />
+            </div>
+            <div class="field">
+              <label for="w-calibre">Calibre</label><input id="w-calibre" />
+            </div>
           </div>
-        </div>
-        <p id="result-meta" class="note"></p>
-        <p id="diag" class="note"></p>
-        <p id="warning" class="warning hidden" aria-live="polite"></p>
+          <div class="grid">
+            <div class="field">
+              <label for="w-reference">Reference</label
+              ><input id="w-reference" />
+            </div>
+            <div class="field">
+              <label for="w-serial">Serial</label><input id="w-serial" />
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field">
+              <label for="w-bph">Beat rate (bph)</label>
+              <input
+                id="w-bph"
+                type="number"
+                value="28800"
+                min="3600"
+                max="72000"
+                step="1"
+              />
+            </div>
+            <div class="field">
+              <label for="w-lift">Lift angle (°)</label>
+              <input
+                id="w-lift"
+                type="number"
+                value="52"
+                min="10"
+                max="120"
+                step="0.5"
+              />
+            </div>
+          </div>
+          <div class="field">
+            <label for="w-notes">Notes</label><input id="w-notes" />
+          </div>
+          <div class="row">
+            <button id="watch-save" type="button" class="primary">Save</button>
+            <button id="watch-cancel" type="button" class="ghost">
+              Cancel
+            </button>
+          </div>
+          <p id="watch-form-status" class="status" aria-live="polite"></p>
+        </section>
+
+        <section id="tests-panel" class="panel hidden">
+          <h2 id="tests-title">Tests</h2>
+          <div id="tests-table"></div>
+        </section>
+      </section>
+
+      <!-- ===== SETTINGS ===== -->
+      <section id="view-settings" class="view hidden">
+        <section class="panel">
+          <h2>Data location</h2>
+          <p id="data-dir" class="note mono"></p>
+          <div class="row">
+            <button id="choose-dir" type="button" class="ghost">
+              Choose folder…
+            </button>
+            <button id="reveal-dir" type="button" class="ghost">Reveal</button>
+          </div>
+          <p class="note">
+            Tip: choose a folder inside iCloud Drive or Dropbox to back up /
+            sync your collection. Don't run two copies of TimegrapherQ against
+            the same synced folder at once.
+          </p>
+        </section>
+        <section class="panel">
+          <h2>Defaults</h2>
+          <div class="field">
+            <label for="default-clip">Default recording duration (s)</label>
+            <input id="default-clip" type="number" min="1" max="120" step="1" />
+          </div>
+          <button id="save-defaults" type="button" class="ghost">Save</button>
+          <p id="settings-status" class="status" aria-live="polite"></p>
+        </section>
       </section>
 
       <footer id="footer" class="footer"></footer>

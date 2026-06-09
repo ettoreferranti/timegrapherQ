@@ -220,7 +220,7 @@ the app can find the data dir on launch.
 
 > Add new ADRs here as decisions are made; never silently change an accepted one.
 
-## 10. Repository layout (as implemented — M0)
+## 10. Repository layout (as implemented — through M2)
 
 ```
 timegrapherq/
@@ -230,9 +230,11 @@ timegrapherq/
 ├── index.html / vite.config.ts / tsconfig.json
 ├── eslint.config.js / .prettierrc.json / .prettierignore / vitest.config.ts
 ├── src/                    # TypeScript frontend
-│   ├── main.ts             #   calls the `health` Tauri command
-│   ├── format.ts           #   pure helpers (unit-tested)
-│   └── format.test.ts
+│   ├── api.ts              #   typed Tauri command wrappers + DTO types
+│   ├── main.ts             #   Measure / Collection / Settings views
+│   ├── format.ts           #   pure formatting helpers (unit-tested)
+│   ├── format.test.ts
+│   └── styles.css
 ├── core/                   # timegrapherq-core: pure DSP/measurement lib
 │   └── src/
 │       ├── lib.rs          #   amplitude formula + period helpers
@@ -245,14 +247,16 @@ timegrapherq/
 │   ├── Info.plist          #   macOS NSMicrophoneUsageDescription
 │   ├── capabilities/default.json
 │   └── src/
-│       ├── main.rs / lib.rs#   commands: health, list_input_devices, record_and_analyze
-│       └── audio.rs        #   cpal capture + record-then-analyse + warnings
+│       ├── main.rs / lib.rs#   commands: health, devices, record_and_analyze,
+│       │                   #   settings, watch CRUD, test CRUD (managed state)
+│       ├── audio.rs        #   cpal capture + record-then-analyse + warnings
+│       └── db.rs           #   SQLite store (rusqlite) + settings + migrations
 ├── .github/workflows/ci.yml + .github/dependabot.yml
 └── docs/                   # REQUIREMENTS / ARCHITECTURE / BACKLOG / TEST_PLAN
 ```
 
 **Toolchain:** Rust (stable) + Tauri 2; Node + pnpm for the frontend. Verified on
 macOS: full workspace compiles, `cargo clippy -D warnings` clean, `cargo test`
-(core 3/3) green, frontend `lint`/`typecheck`/`test`/`build` green. The GUI
-(`pnpm tauri dev`) has not been launched in the build sandbox; runtime IPC will
-be exercised when the Measure UI lands in M1.
+green (core DSP + audio/db helpers), frontend `lint`/`typecheck`/`test`/`build`
+green. The GUI itself is verified manually by the user (`pnpm tauri dev`); the
+build sandbox cannot launch a window or capture audio.

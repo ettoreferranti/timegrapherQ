@@ -45,16 +45,18 @@
 - [x] **M1-11** Low-sample-rate / degraded-device warning (≤24 kHz), plus quiet/clipping advisories. macOS `NSMicrophoneUsageDescription` added. *(FR-A3; done 2026-06-09)*
 - [x] **M1-12** Minimal Measure UI: device picker, bph preset + lift-angle + duration inputs, record button, result card (rate/beat error/amplitude + context + warnings). *(FR-A1, FR-A5; done 2026-06-09. Live VU meter (FR-A2) deferred to M3 live trace.)*
 
-## Milestone M2 — Collection & persistence
+## Milestone M2 — Collection & persistence ✅ (done 2026-06-09)
 *Goal: save and revisit measurements per watch.*
 
-- [ ] **M2-1** SQLite storage + migrations; data-dir bootstrap with self-describing README.txt. *(FR-S1, FR-S3)*
-- [ ] **M2-2** Watch CRUD + metadata (incl. lift angle, bph, photo). *(FR-C1)*
-- [ ] **M2-3** Save measurement as a test linked to a watch, with full metadata (position, temperature, power state, device, quality). *(FR-C2, FR-C3)*
-- [ ] **M2-4** List & view tests per watch. *(FR-C5)*
-- [ ] **M2-5** Edit/delete tests and watches. *(FR-C6)*
-- [ ] **M2-6** Settings: choose/show/open data directory; default clip length. *(FR-S1, FR-S2)*
-- [ ] **M2-7** Optionally store the recorded clip with a test. *(FR-C4)*
+- [x] **M2-1** SQLite store (`rusqlite`, bundled) + versioned migrations (`user_version`); data-dir bootstrap with `recordings/` and a self-describing `README.txt`. *(FR-S1, FR-S3)*
+- [x] **M2-2** Watch CRUD + metadata (brand/model/calibre/reference/serial/lift angle/bph/notes). *(FR-C1; photo deferred.)*
+- [x] **M2-3** Save measurement as a test linked to a watch, with position, temperature, power state, device, sample rate, quality, beats. *(FR-C2, FR-C3)*
+- [x] **M2-4** List & view tests per watch (history table). *(FR-C5)*
+- [x] **M2-5** Edit (watch full form; test notes/conditions) and delete tests & watches (cascade). *(FR-C6)*
+- [x] **M2-6** Settings: choose (native dialog) / show / reveal data directory; default clip length. *(FR-S1, FR-S2)*
+- [x] **M2-7** Optionally retain the recorded clip with a test (copied into `recordings/<id>.wav`). *(FR-C4)*
+
+Backend storage layer is unit-tested (CRUD round-trips, cascade delete, idempotent migrations, settings round-trip). UI verification is manual.
 
 ## Milestone M3 — Live trace
 *Goal: real-time classic timegrapher experience.*

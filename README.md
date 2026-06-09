@@ -61,10 +61,18 @@ See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) for the full domain backgroun
 
 ## Status
 
-🚧 **Early development — requirements & architecture phase.**
+🚧 **Working application, in active development.**
 
-The current deliverables are the planning documents below. Implementation begins
-with **Milestone M1: core measurement accuracy** (see the backlog).
+- **M0** — hardened Tauri 2 workspace, CI, tooling ✅
+- **M1** — core measurement (rate / beat error / amplitude), mic capture,
+  robust detection with a confidence score, Measure UI ✅
+- **M2** — watch collection, test history, local SQLite persistence in a
+  configurable data directory, settings ✅
+- **Next** — live scrolling trace (M3); visualisation, comparison & export (M4)
+
+Measurement is validated against synthetic ground-truth signals. Getting a clean
+reading from a real watch needs a **contact microphone** (see below); air‑coupled
+laptop/phone/Bluetooth mics filter out the tick.
 
 ## Project documents
 

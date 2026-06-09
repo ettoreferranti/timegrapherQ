@@ -39,9 +39,10 @@ async fn record_and_analyze(
     bph: u32,
     lift_angle_deg: f64,
     seconds: f64,
+    save_recording: bool,
 ) -> Result<audio::MeasurementDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        audio::record_and_analyze(device_name, bph, lift_angle_deg, seconds)
+        audio::record_and_analyze(device_name, bph, lift_angle_deg, seconds, save_recording)
     })
     .await
     .map_err(|e| format!("recording task failed: {e}"))?

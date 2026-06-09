@@ -27,7 +27,11 @@ interface MeasurementDto {
   device_name: string;
   clip_seconds: number;
   peak_level: number;
+  rms_level: number;
+  raw_onsets: number;
   degraded_input: boolean;
+  measured: boolean;
+  recording_path: string | null;
   warning: string | null;
 }
 
@@ -65,16 +69,34 @@ async function loadDevices(): Promise<void> {
 }
 
 function showMetrics(m: MeasurementDto): void {
-  el("m-rate").textContent = formatRate(m.rate_s_per_day);
-  el("m-beaterror").textContent = formatBeatError(m.beat_error_ms);
-  el("m-amplitude").textContent = formatAmplitude(m.amplitude_deg);
+  el("m-rate").textContent = m.measured ? formatRate(m.rate_s_per_day) : "—";
+  el("m-beaterror").textContent = m.measured
+    ? formatBeatError(m.beat_error_ms)
+    : "—";
+  el("m-amplitude").textContent = m.measured
+    ? formatAmplitude(m.amplitude_deg)
+    : "—";
 
-  el("result-meta").textContent =
-    `confidence ${Math.round(m.quality * 100)}% · ${m.beats_used}/${m.beats_expected} ticks · ` +
-    `${(m.sample_rate / 1000).toFixed(1)} kHz · ${m.clip_seconds.toFixed(0)} s · ` +
-    `${m.bph} bph · ${m.lift_angle_deg}° lift · ${m.device_name}`;
+  el("result-meta").textContent = m.measured
+    ? `confidence ${Math.round(m.quality * 100)}% · ${m.beats_used}/${m.beats_expected} ticks · ` +
+      `${(m.sample_rate / 1000).toFixed(1)} kHz · ${m.clip_seconds.toFixed(0)} s · ` +
+      `${m.bph} bph · ${m.lift_angle_deg}° lift · ${m.device_name}`
+    : `no measurement · ${(m.sample_rate / 1000).toFixed(1)} kHz · ${m.clip_seconds.toFixed(0)} s · ${m.device_name}`;
 
-  el("result").classList.toggle("low-confidence", m.quality < 0.6);
+  // Diagnostics line: helps tell a capture problem from a maths problem.
+  const diag = el<HTMLParagraphElement>("diag");
+  const parts = [
+    `${m.raw_onsets} transients (~${m.beats_expected} expected)`,
+    `peak ${m.peak_level.toFixed(3)}`,
+    `rms ${m.rms_level.toFixed(4)}`,
+  ];
+  if (m.recording_path) parts.push(`saved: ${m.recording_path}`);
+  diag.textContent = parts.join(" · ");
+
+  el("result").classList.toggle(
+    "low-confidence",
+    !m.measured || m.quality < 0.6,
+  );
 
   const warning = el<HTMLParagraphElement>("warning");
   if (m.warning) {
@@ -93,6 +115,7 @@ async function onRecord(): Promise<void> {
   const bph = Number(el<HTMLSelectElement>("bph").value);
   const liftAngleDeg = Number(el<HTMLInputElement>("lift").value);
   const seconds = Number(el<HTMLInputElement>("duration").value);
+  const saveRecording = el<HTMLInputElement>("save").checked;
 
   button.disabled = true;
   status.textContent = `Recording for ${seconds.toFixed(0)} s — hold the microphone against the watch…`;
@@ -102,6 +125,7 @@ async function onRecord(): Promise<void> {
       bph,
       liftAngleDeg,
       seconds,
+      saveRecording,
     });
     status.textContent = "";
     showMetrics(m);

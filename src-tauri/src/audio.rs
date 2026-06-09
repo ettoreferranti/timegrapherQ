@@ -5,18 +5,21 @@
 //! requested duration, then drop the stream and hand the buffer to
 //! `timegrapherq_core::analyze`.
 //!
-//! Pure helpers (validation, degraded-input detection, warning text) are kept
-//! separate and unit-tested; the audio I/O itself is exercised manually on a
-//! real device.
+//! Pure helpers (validation, degraded-input detection, warning text, WAV
+//! writing) are kept separate and unit-tested; the audio I/O itself is
+//! exercised manually on a real device.
 
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use serde::Serialize;
 
-use timegrapherq_core::{analyze, AnalysisConfig};
+use timegrapherq_core::{analyze, dsp, AnalysisConfig};
 
 /// Effective sample rates at or below this are flagged as degraded (e.g. a
 /// Bluetooth hands-free profile), which harms tick-transient capture.
@@ -31,7 +34,7 @@ pub struct DeviceInfo {
     pub channels: u16,
 }
 
-/// A measurement plus capture context, returned to the UI.
+/// A measurement plus capture context and diagnostics, returned to the UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasurementDto {
     pub rate_s_per_day: f64,
@@ -47,7 +50,15 @@ pub struct MeasurementDto {
     pub device_name: String,
     pub clip_seconds: f64,
     pub peak_level: f32,
+    /// RMS level of the whole clip (diagnostic).
+    pub rms_level: f32,
+    /// Raw transients detected before grouping into beats (diagnostic).
+    pub raw_onsets: usize,
     pub degraded_input: bool,
+    /// Whether a measurement was obtained at all (vs. only diagnostics).
+    pub measured: bool,
+    /// Path to the saved WAV, if recording was requested.
+    pub recording_path: Option<String>,
     pub warning: Option<String>,
 }
 
@@ -76,15 +87,16 @@ pub fn list_devices() -> Vec<DeviceInfo> {
     out
 }
 
-/// Record from `device_name` (or the default input) for `seconds`, then analyse.
-///
-/// Returns a populated [`MeasurementDto`], or an error string suitable for
-/// display if capture failed or no steady tick could be detected.
+/// Record from `device_name` (or the default input) for `seconds`, then
+/// analyse. Always returns a [`MeasurementDto`] when capture succeeds — even if
+/// no steady tick was found (`measured == false`, `quality == 0`) — so the UI
+/// can show diagnostics. Returns an error only when capture itself fails.
 pub fn record_and_analyze(
     device_name: Option<String>,
     bph: u32,
     lift_angle_deg: f64,
     seconds: f64,
+    save_recording: bool,
 ) -> Result<MeasurementDto, String> {
     validate_params(bph, lift_angle_deg, seconds)?;
 
@@ -99,53 +111,134 @@ pub fn record_and_analyze(
     if samples.is_empty() {
         return Err("no audio was captured (is microphone permission granted?)".to_string());
     }
-    let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
 
     let cfg = AnalysisConfig::new(bph, lift_angle_deg);
-    let degraded_input = is_degraded(sample_rate);
-    let capture_warning = build_warning(degraded_input, peak_level);
+    let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
+    let stats = signal_stats(&samples, sample_rate, &cfg);
+    let beats_expected = expected_beats(samples.len(), sample_rate, bph);
 
-    let m = analyze(&samples, sample_rate, &cfg).ok_or_else(|| {
-        capture_warning.clone().unwrap_or_else(|| {
-            "could not detect a steady tick — check microphone placement, the \
-             selected bph, and that the watch is running"
-                .to_string()
-        })
-    })?;
+    let recording_path = if save_recording {
+        save_wav(&samples, sample_rate).ok()
+    } else {
+        None
+    };
+
+    let degraded_input = is_degraded(sample_rate);
+    let measurement = analyze(&samples, sample_rate, &cfg);
 
     let mut warnings = Vec::new();
-    if let Some(w) = capture_warning {
+    if let Some(w) = build_warning(degraded_input, peak_level) {
         warnings.push(w);
     }
-    if m.quality < 0.6 {
-        warnings.push(format!(
-            "Low confidence ({:.0}%): used {} of ~{} expected ticks. Press the \
-             microphone firmly against the watch, reduce background noise, and \
-             confirm the beat rate (bph).",
-            m.quality * 100.0,
-            m.beats_used,
-            m.beats_expected
-        ));
-    }
-    let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
+
+    let dto = match measurement {
+        Some(m) => {
+            if m.quality < 0.6 {
+                warnings.push(low_confidence_message(
+                    m.quality,
+                    m.beats_used,
+                    m.beats_expected,
+                ));
+            }
+            MeasurementDto {
+                rate_s_per_day: m.rate_s_per_day,
+                beat_error_ms: m.beat_error_ms,
+                amplitude_deg: m.amplitude_deg,
+                beats_detected: m.beats_detected,
+                beats_used: m.beats_used,
+                beats_expected: m.beats_expected,
+                quality: m.quality,
+                measured: true,
+                ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
+            }
+        }
+        None => {
+            warnings.push(format!(
+                "No steady tick detected (found {} transients, ~{} expected). \
+                 Press the microphone firmly against the watch, use a quiet room, \
+                 and confirm the beat rate (bph). The built-in mic often works \
+                 better than phone/Bluetooth mics, which filter out ticks.",
+                stats.raw_onsets, beats_expected
+            ));
+            MeasurementDto {
+                beats_expected,
+                measured: false,
+                ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
+            }
+        }
+    };
 
     Ok(MeasurementDto {
-        rate_s_per_day: m.rate_s_per_day,
-        beat_error_ms: m.beat_error_ms,
-        amplitude_deg: m.amplitude_deg,
-        bph: m.bph,
-        lift_angle_deg: m.lift_angle_deg,
-        beats_detected: m.beats_detected,
-        beats_used: m.beats_used,
-        beats_expected: m.beats_expected,
-        quality: m.quality,
-        sample_rate,
-        device_name: actual_name,
-        clip_seconds: seconds,
         peak_level,
+        rms_level: stats.rms,
+        raw_onsets: stats.raw_onsets,
         degraded_input,
-        warning,
+        recording_path,
+        warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
+        ..dto
     })
+}
+
+/// A zeroed DTO with the fields that are known regardless of outcome.
+fn base_dto(
+    bph: u32,
+    lift_angle_deg: f64,
+    sample_rate: u32,
+    device_name: &str,
+    seconds: f64,
+) -> MeasurementDto {
+    MeasurementDto {
+        rate_s_per_day: 0.0,
+        beat_error_ms: 0.0,
+        amplitude_deg: None,
+        bph,
+        lift_angle_deg,
+        beats_detected: 0,
+        beats_used: 0,
+        beats_expected: 0,
+        quality: 0.0,
+        sample_rate,
+        device_name: device_name.to_string(),
+        clip_seconds: seconds,
+        peak_level: 0.0,
+        rms_level: 0.0,
+        raw_onsets: 0,
+        degraded_input: false,
+        measured: false,
+        recording_path: None,
+        warning: None,
+    }
+}
+
+/// Diagnostic signal statistics, computed with the same DSP front-end as
+/// [`analyze`] so they reflect what the analyzer "sees".
+struct SignalStats {
+    rms: f32,
+    raw_onsets: usize,
+}
+
+fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> SignalStats {
+    let sr = f64::from(sample_rate);
+    let n = samples.len().max(1) as f64;
+    let rms = (samples
+        .iter()
+        .map(|&s| f64::from(s) * f64::from(s))
+        .sum::<f64>()
+        / n)
+        .sqrt() as f32;
+
+    let filtered = dsp::bandpass(samples, sr, cfg.bandpass_center_hz, cfg.bandpass_q);
+    let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
+    let reference = dsp::percentile(&env, cfg.reference_percentile);
+    let threshold = cfg.threshold_ratio * reference;
+    let raw_onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s).len();
+
+    SignalStats { rms, raw_onsets }
+}
+
+fn expected_beats(n_samples: usize, sample_rate: u32, bph: u32) -> usize {
+    let duration = n_samples as f64 / f64::from(sample_rate);
+    (duration / (3600.0 / f64::from(bph))).round() as usize
 }
 
 /// Resolve a device by name, or the system default input.
@@ -259,6 +352,66 @@ fn build_warning(degraded: bool, peak: f32) -> Option<String> {
     }
 }
 
+fn low_confidence_message(quality: f64, used: usize, expected: usize) -> String {
+    format!(
+        "Low confidence ({:.0}%): used {} of ~{} expected ticks. Press the \
+         microphone firmly against the watch, reduce background noise, and \
+         confirm the beat rate (bph).",
+        quality * 100.0,
+        used,
+        expected
+    )
+}
+
+/// Directory for saved recordings: the user's Downloads folder if present,
+/// otherwise the system temp directory.
+fn recording_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        let downloads = Path::new(&home).join("Downloads");
+        if downloads.is_dir() {
+            return downloads;
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Save mono `f32` samples as a 16-bit PCM WAV; returns the file path.
+fn save_wav(samples: &[f32], sample_rate: u32) -> Result<String, String> {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = recording_dir().join(format!("timegrapherq-{ts}.wav"));
+    write_wav_16(&path, samples, sample_rate).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Write a mono 16-bit PCM WAV file.
+fn write_wav_16(path: &Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
+    let mut f = BufWriter::new(File::create(path)?);
+    let data_len = (samples.len() as u32) * 2;
+    let byte_rate = sample_rate * 2;
+
+    f.write_all(b"RIFF")?;
+    f.write_all(&(36 + data_len).to_le_bytes())?;
+    f.write_all(b"WAVE")?;
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?; // PCM fmt chunk size
+    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&1u16.to_le_bytes())?; // mono
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&2u16.to_le_bytes())?; // block align
+    f.write_all(&16u16.to_le_bytes())?; // bits per sample
+    f.write_all(b"data")?;
+    f.write_all(&data_len.to_le_bytes())?;
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        f.write_all(&v.to_le_bytes())?;
+    }
+    f.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +440,23 @@ mod tests {
         assert!(build_warning(true, 0.3).unwrap().contains("sample rate"));
         assert!(build_warning(false, 0.001).unwrap().contains("quiet"));
         assert!(build_warning(false, 1.0).unwrap().contains("clipping"));
+    }
+
+    #[test]
+    fn expected_beats_for_clip() {
+        // 28800 bph = 8 beats/s; 10 s of 44.1 kHz => ~80 beats.
+        assert_eq!(expected_beats(441_000, 44_100, 28_800), 80);
+    }
+
+    #[test]
+    fn wav_header_and_size() {
+        let samples = vec![0.0_f32, 0.5, -0.5, 1.0];
+        let path = std::env::temp_dir().join("timegrapherq-test.wav");
+        write_wav_16(&path, &samples, 44_100).expect("write wav");
+        let bytes = std::fs::read(&path).expect("read wav");
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(bytes.len(), 44 + samples.len() * 2);
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -215,3 +215,33 @@ the app can find the data dir on launch.
   per-beat rendering; lightweight time-series charts. *Accepted.*
 
 > Add new ADRs here as decisions are made; never silently change an accepted one.
+
+## 10. Repository layout (as implemented — M0)
+
+```
+timegrapherq/
+├── Cargo.toml              # Rust workspace (core + src-tauri)
+├── package.json            # frontend + Tauri scripts (pnpm)
+├── pnpm-workspace.yaml      # pnpm build-script allow-list (supply-chain safety)
+├── index.html / vite.config.ts / tsconfig.json
+├── eslint.config.js / .prettierrc.json / .prettierignore / vitest.config.ts
+├── src/                    # TypeScript frontend
+│   ├── main.ts             #   calls the `health` Tauri command
+│   ├── format.ts           #   pure helpers (unit-tested)
+│   └── format.test.ts
+├── core/                   # timegrapherq-core: pure DSP/measurement lib
+│   └── src/lib.rs          #   amplitude formula + period helpers (+ tests)
+├── src-tauri/              # timegrapherq: Tauri app shell
+│   ├── Cargo.toml          #   depends on timegrapherq-core
+│   ├── tauri.conf.json     #   hardened CSP, withGlobalTauri off
+│   ├── capabilities/default.json
+│   └── src/{main.rs,lib.rs}#   `health` command (core integration point)
+├── .github/workflows/ci.yml + .github/dependabot.yml
+└── docs/                   # REQUIREMENTS / ARCHITECTURE / BACKLOG / TEST_PLAN
+```
+
+**Toolchain:** Rust (stable) + Tauri 2; Node + pnpm for the frontend. Verified on
+macOS: full workspace compiles, `cargo clippy -D warnings` clean, `cargo test`
+(core 3/3) green, frontend `lint`/`typecheck`/`test`/`build` green. The GUI
+(`pnpm tauri dev`) has not been launched in the build sandbox; runtime IPC will
+be exercised when the Measure UI lands in M1.

@@ -1,0 +1,5 @@
+# pnpm blocks dependency build scripts by default for supply-chain safety.
+# Allow only this vetted dependency: esbuild's postinstall provides Vite's
+# native bundler binary.
+allowBuilds:
+  esbuild: true

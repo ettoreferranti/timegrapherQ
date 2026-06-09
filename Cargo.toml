@@ -1,0 +1,11 @@
+# Cargo workspace for TimegrapherQ.
+# - `core`      : pure DSP/measurement library (no I/O, no UI) — unit-testable.
+# - `src-tauri` : the Tauri desktop application (audio I/O, storage, IPC).
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["Ettore Ferranti"]

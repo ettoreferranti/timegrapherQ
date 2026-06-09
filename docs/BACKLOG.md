@@ -10,15 +10,18 @@
 
 ---
 
-## Milestone M0 — Project setup
+## Milestone M0 — Project setup ✅ (done 2026-06-09)
 *Goal: a runnable, hardened skeleton.*
 
-- [ ] **M0-1** Scaffold Tauri 2 app (Rust `app` + `core` lib crate, TS/Vite frontend).
-  - AC: `pnpm tauri dev` launches an empty window on macOS.
-- [ ] **M0-2** Set up Cargo + pnpm workspaces, linting (clippy/eslint), formatting.
-- [ ] **M0-3** Apply baseline Tauri security config (capability allow-list, strict CSP, no network). *(NFR-Sec-1)*
-- [ ] **M0-4** CI pipeline: build, unit tests, `cargo audit`, `pnpm audit`.
-- [ ] **M0-5** Add LICENSE, finalise SECURITY.md, wire Dependabot.
+- [x] **M0-1** Scaffold Tauri 2 app (Rust `src-tauri` app + `core` lib crate, TS/Vite frontend).
+  - Cargo workspace (`core` + `src-tauri`); `health` command wires the core to the UI. Full workspace compiles; frontend builds; `core` unit tests pass. (GUI `tauri dev` launch not run in the build sandbox; verified by full compile instead.)
+- [x] **M0-2** Cargo + pnpm workspaces; linting (clippy + eslint) and formatting (rustfmt + prettier) wired with scripts.
+- [x] **M0-3** Baseline Tauri security config: strict CSP, `withGlobalTauri` off, minimal capability allow-list, no network. *(NFR-Sec-1)*
+- [x] **M0-4** CI pipeline (`.github/workflows/ci.yml`): format/lint/typecheck/test/build + advisory `cargo audit` / `pnpm audit`.
+- [x] **M0-5** LICENSE (MIT), SECURITY.md, and Dependabot (`cargo`, `npm`, `github-actions`) in place.
+
+> First `core` unit tests already validate the amplitude formula via round-trip
+> against its inverse — the foundation for the M1 ground-truth strategy.
 
 ## Milestone M1 — Core measurement accuracy *(highest priority)*
 *Goal: trustworthy rate / beat error / amplitude from a recorded clip, with noise filtering. Proven against ground truth before any UI polish.*

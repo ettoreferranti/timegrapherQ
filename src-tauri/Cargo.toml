@@ -1,0 +1,22 @@
+[package]
+name = "timegrapherq"
+version = "0.1.0"
+description = "TimegrapherQ — a software timegrapher for mechanical watches."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary on Windows.
+name = "timegrapherq_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+timegrapherq-core = { path = "../core" }

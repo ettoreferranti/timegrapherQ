@@ -1,0 +1,11 @@
+[package]
+name = "timegrapherq-core"
+version = "0.1.0"
+description = "Pure DSP / measurement core for TimegrapherQ (no I/O, no UI)."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[dev-dependencies]

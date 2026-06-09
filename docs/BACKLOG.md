@@ -28,15 +28,15 @@
 
 - [x] **M1-1** Synthetic signal generator (`core::synth`): escapement-like audio with known bph, rate, beat error, amplitude, and seeded noise; returns ground-truth beat onsets + impulse spacing. 7 unit tests covering sample count, beat count, rate scaling, beat-error alternation, amplitude spacing, transient energy, and deterministic noise. *(supports TEST_PLAN; done 2026-06-09)*
 - [ ] **M1-2** Audio capture via `cpal`: enumerate devices, open mono stream, ring buffer. *(FR-A1)*
-- [ ] **M1-3** DSP pre-filter (DC removal + band-pass) and energy envelope. *(FR-M1)*
-- [ ] **M1-4** Onset/transient detection with adaptive threshold. *(FR-M1)*
-- [ ] **M1-5** Beat segmentation + period estimate from supplied bph. *(FR-M1, FR-A4)*
-- [ ] **M1-6** Rate computation (phase regression → s/day). *(FR-M2)*
-  - AC: within ±1 s/day on clean synthetic signal.
-- [ ] **M1-7** Beat-error computation (ms). *(FR-M3)*
-  - AC: within ±0.1 ms on clean synthetic signal.
-- [ ] **M1-8** Amplitude computation from Δt, lift angle, bph. *(FR-M4)*
-  - AC: within ±3° on clean synthetic signal.
+- [x] **M1-3** DSP band-pass (RBJ biquad) + rectified one-pole envelope (`core::dsp`). *(FR-M1; done 2026-06-09)*
+- [x] **M1-4** Onset/transient detection (per-run argmax above relative threshold + refractory) (`core::dsp::detect_onsets`). *(FR-M1; done 2026-06-09)*
+- [x] **M1-5** Beat segmentation (group impulse pairs into beats) + period estimate from supplied bph (`core::measure::group_beats`). *(FR-M1, FR-A4; done 2026-06-09)*
+- [x] **M1-6** Rate computation (least-squares regression of beat onsets → measured period → s/day). *(FR-M2; done 2026-06-09)*
+  - AC met: within ±1 s/day on synthetic signals (tested at 0, +12, −25, and combined-with-noise).
+- [x] **M1-7** Beat-error computation (median of interleaved tick/tock intervals). *(FR-M3; done 2026-06-09)*
+  - AC met: within ±0.1 ms (tested at 0.0 and 0.8 ms).
+- [x] **M1-8** Amplitude from median impulse spacing Δt, lift angle, bph. *(FR-M4; done 2026-06-09)*
+  - AC met: within ±3° (tested at 220, 270, 280, 290°).
 - [ ] **M1-9** Outlier rejection + quality/confidence score; report accepted/rejected beats. *(FR-M5)*
   - AC: maintains accuracy targets at a defined SNR; degrades gracefully and lowers confidence below it.
 - [ ] **M1-10** Record-then-analyse command: capture N seconds, return a result object. *(FR-M6)*

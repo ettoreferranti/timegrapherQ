@@ -61,10 +61,14 @@ score must drop and the UI must indicate low reliability (not silently mislead).
 
 ### Measurement (FR-M*) — automated against synthetic ground truth
 - **TC-M1** Beats detected count matches expected for a clean signal. *(FR-M1)*
+  — **Implemented** (`core::measure` tests: `detects_most_beats_on_clean_signal`).
 - **TC-M2** Rate within ±1 s/day across a sweep of true rates (−60…+60 s/d). *(FR-M2)*
+  — **Partly implemented** (0, +12, −25 s/d + combined). TODO: widen the sweep.
 - **TC-M3** Beat error within ±0.1 ms across a sweep (0…3 ms). *(FR-M3)*
+  — **Partly implemented** (0.0, 0.5, 0.8 ms). TODO: widen the sweep.
 - **TC-M4** Amplitude within ±3° across a sweep (180…320°) at lift 52°, and for
   alternate lift angles (51/52/53°). *(FR-M4)*
+  — **Partly implemented** (220/270/280/290°). TODO: full sweep + alt lift angles.
 - **TC-M5** With added noise at the defined SNR, thresholds still met; below it,
   confidence drops and rejected-beat count rises. *(FR-M5)*
 - **TC-M6** Record-then-analyse returns a complete result for a fixed clip. *(FR-M6)*

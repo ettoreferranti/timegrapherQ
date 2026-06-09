@@ -230,7 +230,11 @@ timegrapherq/
 │   ├── format.ts           #   pure helpers (unit-tested)
 │   └── format.test.ts
 ├── core/                   # timegrapherq-core: pure DSP/measurement lib
-│   └── src/lib.rs          #   amplitude formula + period helpers (+ tests)
+│   └── src/
+│       ├── lib.rs          #   amplitude formula + period helpers
+│       ├── synth.rs        #   synthetic escapement generator (ground truth)
+│       ├── dsp.rs          #   band-pass biquad, envelope, onset detection
+│       └── measure.rs      #   analyze(): onsets → rate / beat error / amplitude
 ├── src-tauri/              # timegrapherq: Tauri app shell
 │   ├── Cargo.toml          #   depends on timegrapherq-core
 │   ├── tauri.conf.json     #   hardened CSP, withGlobalTauri off

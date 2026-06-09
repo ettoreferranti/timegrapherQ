@@ -6,7 +6,11 @@
 //! which is the cornerstone of the project's test strategy (see
 //! `docs/TEST_PLAN.md`).
 
+pub mod dsp;
+pub mod measure;
 pub mod synth;
+
+pub use measure::{analyze, AnalysisConfig, Measurement};
 
 /// Crate version, surfaced to the app for a health check.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

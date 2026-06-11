@@ -92,6 +92,8 @@ pub struct Test {
     pub measured_at: String,
     pub position: Option<String>,
     pub rate_s_per_day: Option<f64>,
+    /// ~95% confidence half-width on the rate (s/day), when known.
+    pub rate_ci95_s_per_day: Option<f64>,
     pub beat_error_ms: Option<f64>,
     pub amplitude_deg: Option<f64>,
     pub bph_used: u32,
@@ -113,6 +115,8 @@ pub struct Test {
 pub struct TestInput {
     pub position: Option<String>,
     pub rate_s_per_day: Option<f64>,
+    /// ~95% confidence half-width on the rate (s/day), when known.
+    pub rate_ci95_s_per_day: Option<f64>,
     pub beat_error_ms: Option<f64>,
     pub amplitude_deg: Option<f64>,
     pub bph_used: u32,
@@ -178,6 +182,9 @@ CREATE TABLE test (
 
 CREATE INDEX idx_test_watch ON test(watch_id, measured_at);
 "#;
+
+/// v2: rate error bars. Appended so existing column indices stay stable.
+const SCHEMA_V2: &str = "ALTER TABLE test ADD COLUMN rate_ci95_s_per_day REAL;";
 
 const DATA_DIR_README: &str = "\
 This folder holds your TimegrapherQ data.
@@ -304,7 +311,7 @@ impl Store {
             .prepare(
                 "SELECT id,watch_id,measured_at,position,rate_s_per_day,beat_error_ms,amplitude_deg,\
                  bph_used,lift_angle_used,temperature_c,power_state,device_name,sample_rate_hz,\
-                 clip_seconds,quality,beats_used,audio_path,notes,created_at \
+                 clip_seconds,quality,beats_used,audio_path,notes,created_at,rate_ci95_s_per_day \
                  FROM test WHERE watch_id=?1 ORDER BY measured_at DESC",
             )
             .map_err(|e| e.to_string())?;
@@ -336,8 +343,9 @@ impl Store {
             .execute(
                 "INSERT INTO test (id,watch_id,measured_at,position,rate_s_per_day,beat_error_ms,\
                  amplitude_deg,bph_used,lift_angle_used,temperature_c,power_state,device_name,\
-                 sample_rate_hz,clip_seconds,quality,beats_used,audio_path,notes,created_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                 sample_rate_hz,clip_seconds,quality,beats_used,audio_path,notes,created_at,\
+                 rate_ci95_s_per_day) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     id,
                     watch_id,
@@ -358,6 +366,7 @@ impl Store {
                     audio_path,
                     input.notes,
                     now,
+                    input.rate_ci95_s_per_day,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -402,7 +411,7 @@ impl Store {
             .query_row(
                 "SELECT id,watch_id,measured_at,position,rate_s_per_day,beat_error_ms,amplitude_deg,\
                  bph_used,lift_angle_used,temperature_c,power_state,device_name,sample_rate_hz,\
-                 clip_seconds,quality,beats_used,audio_path,notes,created_at \
+                 clip_seconds,quality,beats_used,audio_path,notes,created_at,rate_ci95_s_per_day \
                  FROM test WHERE id=?1",
                 params![id],
                 row_to_test,
@@ -418,6 +427,11 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     if version < 1 {
         conn.execute_batch(SCHEMA_V1).map_err(|e| e.to_string())?;
         conn.pragma_update(None, "user_version", 1)
+            .map_err(|e| e.to_string())?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2).map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "user_version", 2)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -467,6 +481,7 @@ fn row_to_test(row: &rusqlite::Row) -> rusqlite::Result<Test> {
         audio_path: row.get(16)?,
         notes: row.get(17)?,
         created_at: row.get(18)?,
+        rate_ci95_s_per_day: row.get(19)?,
     })
 }
 
@@ -534,6 +549,7 @@ mod tests {
         let input = TestInput {
             position: Some("DU".to_string()),
             rate_s_per_day: Some(3.2),
+            rate_ci95_s_per_day: Some(1.1),
             beat_error_ms: Some(0.4),
             amplitude_deg: Some(285.0),
             bph_used: 21_600,
@@ -550,6 +566,7 @@ mod tests {
         };
         let t = s.create_test(&w.id, &input).unwrap();
         assert_eq!(t.watch_id, w.id);
+        assert_eq!(t.rate_ci95_s_per_day, Some(1.1));
         assert_eq!(s.list_tests(&w.id).unwrap().len(), 1);
 
         // Edit conditions.

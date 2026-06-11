@@ -77,6 +77,8 @@ export interface Test {
   measured_at: string;
   position: string | null;
   rate_s_per_day: number | null;
+  /** ~95% confidence half-width on the rate (s/day), when known. */
+  rate_ci95_s_per_day: number | null;
   beat_error_ms: number | null;
   amplitude_deg: number | null;
   bph_used: number;
@@ -96,6 +98,7 @@ export interface Test {
 export interface TestInput {
   position: string | null;
   rate_s_per_day: number | null;
+  rate_ci95_s_per_day: number | null;
   beat_error_ms: number | null;
   amplitude_deg: number | null;
   bph_used: number;

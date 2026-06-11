@@ -181,6 +181,7 @@ async function onSaveTest(): Promise<void> {
     await api.saveTest(watchId, {
       position: el<HTMLSelectElement>("save-position").value || null,
       rate_s_per_day: m.rate_s_per_day,
+      rate_ci95_s_per_day: m.rate_ci95_s_per_day,
       beat_error_ms: m.beat_error_ms,
       amplitude_deg: m.amplitude_deg,
       bph_used: m.bph,
@@ -324,7 +325,12 @@ function renderTests(container: HTMLElement, tests: Test[]): void {
     const cells = [
       formatDate(t.measured_at),
       t.position ?? "",
-      t.rate_s_per_day != null ? formatRate(t.rate_s_per_day) : "",
+      t.rate_s_per_day != null
+        ? formatRate(t.rate_s_per_day) +
+          (t.rate_ci95_s_per_day != null
+            ? ` ±${t.rate_ci95_s_per_day.toFixed(1)}`
+            : "")
+        : "",
       t.beat_error_ms != null ? formatBeatError(t.beat_error_ms) : "",
       t.amplitude_deg != null ? formatAmplitude(t.amplitude_deg) : "",
       t.temperature_c != null ? `${t.temperature_c}°C` : "",

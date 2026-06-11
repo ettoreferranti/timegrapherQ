@@ -21,6 +21,9 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
+# Audio file import: WAV/FLAC/OGG by default, plus AAC-in-MP4 (phone voice
+# memos), MP3 and AIFF.
+symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3", "aiff"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "macros"] }

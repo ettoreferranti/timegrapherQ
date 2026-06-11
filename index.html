@@ -79,9 +79,19 @@
             Save recording (WAV) for diagnostics
           </label>
 
-          <button id="record" type="button" class="primary">
-            Record &amp; measure
-          </button>
+          <div class="row">
+            <button id="record" type="button" class="primary">
+              Record &amp; measure
+            </button>
+            <button
+              id="analyze-file"
+              type="button"
+              class="ghost"
+              title="Analyze an audio file (WAV, M4A, MP3, FLAC...) — e.g. a phone recording pressed against the watch"
+            >
+              Analyze file…
+            </button>
+          </div>
           <p id="status" class="status" aria-live="polite"></p>
         </section>
 

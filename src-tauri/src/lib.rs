@@ -6,6 +6,7 @@
 
 mod audio;
 mod db;
+mod import;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -62,6 +63,19 @@ async fn record_and_analyze(
     })
     .await
     .map_err(|e| format!("recording task failed: {e}"))?
+}
+
+/// Analyse an audio file (WAV, M4A, MP3, FLAC, AIFF, OGG) as if it had been
+/// recorded live — phone clips pressed against the watch work well.
+#[tauri::command]
+async fn analyze_file(
+    path: String,
+    bph: u32,
+    lift_angle_deg: f64,
+) -> Result<audio::MeasurementDto, String> {
+    tauri::async_runtime::spawn_blocking(move || import::analyze_file(&path, bph, lift_angle_deg))
+        .await
+        .map_err(|e| format!("analysis task failed: {e}"))?
 }
 
 // ---- Settings ----
@@ -170,6 +184,7 @@ pub fn run() {
             health,
             list_input_devices,
             record_and_analyze,
+            analyze_file,
             get_settings,
             set_data_dir,
             set_default_clip,

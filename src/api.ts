@@ -134,6 +134,8 @@ export const api = {
   listInputDevices: () => invoke<DeviceInfo[]>("list_input_devices"),
   recordAndAnalyze: (args: RecordArgs) =>
     invoke<MeasurementDto>("record_and_analyze", { ...args }),
+  analyzeFile: (path: string, bph: number, liftAngleDeg: number) =>
+    invoke<MeasurementDto>("analyze_file", { path, bph, liftAngleDeg }),
 
   getSettings: () => invoke<Settings>("get_settings"),
   setDataDir: (path: string) => invoke<Settings>("set_data_dir", { path }),

@@ -121,23 +121,44 @@ pub fn record_and_analyze(
         return Err("no audio was captured (is microphone permission granted?)".to_string());
     }
 
+    let recording_path = if save_recording {
+        save_wav(&samples, sample_rate, &recording_dir()).ok()
+    } else {
+        None
+    };
+
+    Ok(build_dto(
+        &samples,
+        sample_rate,
+        bph,
+        lift_angle_deg,
+        &actual_name,
+        recording_path,
+    ))
+}
+
+/// Analyse captured or imported samples and assemble the full DTO with
+/// diagnostics and warnings. Shared by the record and file-import paths.
+pub fn build_dto(
+    samples: &[f32],
+    sample_rate: u32,
+    bph: u32,
+    lift_angle_deg: f64,
+    device_name: &str,
+    recording_path: Option<String>,
+) -> MeasurementDto {
+    let seconds = samples.len() as f64 / f64::from(sample_rate);
     let cfg = AnalysisConfig::new(bph, lift_angle_deg);
     let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
     // Diagnostics are computed on the outlier-suppressed signal — the same one
     // `analyze` measures — so they aren't dominated by bumps and coughs.
     let (cleaned, masked_seconds) =
-        timegrapherq_core::measure::suppress_outliers(&samples, sample_rate, &cfg);
+        timegrapherq_core::measure::suppress_outliers(samples, sample_rate, &cfg);
     let stats = signal_stats(&cleaned, sample_rate, &cfg);
     let beats_expected = expected_beats(samples.len(), sample_rate, bph);
 
-    let recording_path = if save_recording {
-        save_wav(&samples, sample_rate).ok()
-    } else {
-        None
-    };
-
     let degraded_input = is_degraded(sample_rate);
-    let measurement = analyze(&samples, sample_rate, &cfg);
+    let measurement = analyze(samples, sample_rate, &cfg);
 
     let mut warnings = Vec::new();
     if let Some(w) = build_warning(degraded_input, peak_level) {
@@ -167,7 +188,7 @@ pub fn record_and_analyze(
                 band_center_hz: m.band_center_hz,
                 quality: m.quality,
                 measured: true,
-                ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
+                ..base_dto(bph, lift_angle_deg, sample_rate, device_name, seconds)
             }
         }
         None => {
@@ -182,12 +203,12 @@ pub fn record_and_analyze(
                 beats_expected,
                 band_center_hz: stats.band_center_hz,
                 measured: false,
-                ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
+                ..base_dto(bph, lift_angle_deg, sample_rate, device_name, seconds)
             }
         }
     };
 
-    Ok(MeasurementDto {
+    MeasurementDto {
         peak_level,
         rms_level: stats.rms,
         raw_onsets: stats.raw_onsets,
@@ -198,7 +219,7 @@ pub fn record_and_analyze(
         recording_path,
         warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
         ..dto
-    })
+    }
 }
 
 /// A zeroed DTO with the fields that are known regardless of outcome.
@@ -374,14 +395,21 @@ fn is_degraded(sample_rate: u32) -> bool {
 
 /// Validate user-supplied parameters, returning a friendly message if invalid.
 fn validate_params(bph: u32, lift_angle_deg: f64, seconds: f64) -> Result<(), String> {
+    validate_movement_params(bph, lift_angle_deg)?;
+    if !(1.0..=120.0).contains(&seconds) {
+        return Err("recording duration must be between 1 and 120 seconds".to_string());
+    }
+    Ok(())
+}
+
+/// Validate the movement parameters alone (shared with the file-import path,
+/// which has no recording duration to check).
+pub fn validate_movement_params(bph: u32, lift_angle_deg: f64) -> Result<(), String> {
     if !(3600..=72_000).contains(&bph) {
         return Err("beat rate (bph) must be between 3600 and 72000".to_string());
     }
     if !(10.0..=120.0).contains(&lift_angle_deg) {
         return Err("lift angle must be between 10° and 120°".to_string());
-    }
-    if !(1.0..=120.0).contains(&seconds) {
-        return Err("recording duration must be between 1 and 120 seconds".to_string());
     }
     Ok(())
 }
@@ -453,13 +481,13 @@ fn recording_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// Save mono `f32` samples as a 16-bit PCM WAV; returns the file path.
-fn save_wav(samples: &[f32], sample_rate: u32) -> Result<String, String> {
+/// Save mono `f32` samples as a 16-bit PCM WAV in `dir`; returns the path.
+pub fn save_wav(samples: &[f32], sample_rate: u32, dir: &Path) -> Result<String, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = recording_dir().join(format!("timegrapherq-{ts}.wav"));
+    let path = dir.join(format!("timegrapherq-{ts}.wav"));
     write_wav_16(&path, samples, sample_rate).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }

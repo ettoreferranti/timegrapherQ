@@ -138,6 +138,39 @@ async function onRecord(): Promise<void> {
   }
 }
 
+async function onAnalyzeFile(): Promise<void> {
+  const button = el<HTMLButtonElement>("analyze-file");
+  const status = el<HTMLParagraphElement>("status");
+  const path = await open({
+    multiple: false,
+    directory: false,
+    filters: [
+      {
+        name: "Audio",
+        extensions: ["wav", "m4a", "aac", "mp3", "flac", "aiff", "aif", "ogg"],
+      },
+    ],
+  });
+  if (!path) return; // cancelled
+
+  button.disabled = true;
+  status.textContent = "Analyzing file…";
+  try {
+    const m = await api.analyzeFile(
+      path,
+      Number(el<HTMLSelectElement>("bph").value),
+      Number(el<HTMLInputElement>("lift").value),
+    );
+    lastMeasurement = m;
+    status.textContent = "";
+    showMetrics(m);
+  } catch (err) {
+    status.textContent = `✕ ${String(err)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function populateSaveWatches(): Promise<void> {
   const select = el<HTMLSelectElement>("save-watch");
   const note = el<HTMLParagraphElement>("save-watch-note");
@@ -468,6 +501,10 @@ window.addEventListener("DOMContentLoaded", () => {
       switchView(tab.dataset.view ?? "measure"),
     );
   }
+  el<HTMLButtonElement>("analyze-file").addEventListener(
+    "click",
+    () => void onAnalyzeFile(),
+  );
   el<HTMLButtonElement>("record").addEventListener(
     "click",
     () => void onRecord(),

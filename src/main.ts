@@ -63,7 +63,9 @@ async function loadDevices(): Promise<void> {
 }
 
 function showMetrics(m: MeasurementDto): void {
-  el("m-rate").textContent = m.measured ? formatRate(m.rate_s_per_day) : "—";
+  el("m-rate").textContent = m.measured
+    ? `${formatRate(m.rate_s_per_day)} ±${m.rate_ci95_s_per_day.toFixed(1)}`
+    : "—";
   el("m-beaterror").textContent = m.measured
     ? formatBeatError(m.beat_error_ms)
     : "—";

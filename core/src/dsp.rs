@@ -71,13 +71,26 @@ pub fn envelope(signal: &[f64], sample_rate: f64, tau_s: f64) -> Vec<f64> {
         .collect()
 }
 
-/// Detect transient onsets as the argmax of each contiguous run where the
-/// envelope exceeds the absolute `threshold`, with accepted peaks kept at least
-/// `refractory_s` apart. Returns onset times in seconds.
+/// Detect transient onsets in each contiguous run where the envelope exceeds
+/// the absolute `threshold`, with accepted events kept at least `refractory_s`
+/// apart. Returns onset times in seconds.
+///
+/// Each event is timestamped at its **leading edge**: the (interpolated)
+/// instant the envelope first crosses `edge_fraction` of that run's own peak.
+/// A tick is a burst of sub-pulses whose relative loudness varies from beat to
+/// beat, so the peak position jumps between sub-pulses by milliseconds; the
+/// height-normalised rising edge of the first pulse is far more stable, which
+/// directly tightens the rate fit. `edge_fraction >= 1.0` restores peak timing.
 ///
 /// The threshold is supplied by the caller (see [`percentile`]) so it can be
 /// made robust to a few loud outliers rather than tied to the global maximum.
-pub fn detect_onsets(env: &[f64], sample_rate: f64, threshold: f64, refractory_s: f64) -> Vec<f64> {
+pub fn detect_onsets(
+    env: &[f64],
+    sample_rate: f64,
+    threshold: f64,
+    refractory_s: f64,
+    edge_fraction: f64,
+) -> Vec<f64> {
     if threshold <= 0.0 {
         return Vec::new();
     }
@@ -104,7 +117,7 @@ pub fn detect_onsets(env: &[f64], sample_rate: f64, threshold: f64, refractory_s
                 Some(p) => peak.saturating_sub(p) >= refractory_n,
             };
             if accept {
-                onsets.push(peak as f64 / sample_rate);
+                onsets.push(edge_time(env, i, peak, thr, edge_fraction, sample_rate));
                 last_peak = Some(peak);
             }
             i = j;
@@ -113,6 +126,30 @@ pub fn detect_onsets(env: &[f64], sample_rate: f64, threshold: f64, refractory_s
         }
     }
     onsets
+}
+
+/// The interpolated time at which `env` first reaches `edge_fraction` of the
+/// run's peak value, searching from the run start `i` to the `peak` index.
+fn edge_time(
+    env: &[f64],
+    i: usize,
+    peak: usize,
+    threshold: f64,
+    edge_fraction: f64,
+    sample_rate: f64,
+) -> f64 {
+    if edge_fraction >= 1.0 {
+        return peak as f64 / sample_rate;
+    }
+    let level = (edge_fraction * env[peak]).max(threshold);
+    let k = (i..=peak).find(|&k| env[k] >= level).unwrap_or(peak);
+    if k == 0 {
+        return 0.0;
+    }
+    // env[k-1] < level <= env[k]: linear interpolation between the two samples.
+    let (lo, hi) = (env[k - 1], env[k]);
+    let frac = if hi > lo { (level - lo) / (hi - lo) } else { 1.0 };
+    ((k - 1) as f64 + frac) / sample_rate
 }
 
 /// Silence windows whose peak is far above the typical (median) window peak —
@@ -274,7 +311,7 @@ mod tests {
         let mut env = vec![0.0; 4800];
         env[1000] = 1.0; // pulse 1
         env[3000] = 0.8; // pulse 2, 2000 samples later
-        let onsets = detect_onsets(&env, fs, 0.3, 0.003);
+        let onsets = detect_onsets(&env, fs, 0.3, 0.003, 1.0);
         assert_eq!(onsets.len(), 2);
         assert!((onsets[0] - 1000.0 / fs).abs() < 1e-9);
         assert!((onsets[1] - 3000.0 / fs).abs() < 1e-9);
@@ -286,8 +323,30 @@ mod tests {
         let mut env = vec![0.0; 1000];
         env[100] = 1.0;
         env[150] = 0.9; // ~1 ms later, inside a 3 ms refractory window
-        let onsets = detect_onsets(&env, fs, 0.3, 0.003);
+        let onsets = detect_onsets(&env, fs, 0.3, 0.003, 1.0);
         assert_eq!(onsets.len(), 1);
+    }
+
+    #[test]
+    fn onset_edge_timing_is_height_invariant() {
+        // Two ramps with identical shape but different heights: the
+        // half-height leading edge lands at the same point up each ramp,
+        // independent of pulse height. Each pulse rises linearly over 10
+        // samples, so the 50% crossing sits mid-ramp.
+        let fs = 1000.0;
+        let mut env = vec![0.0; 1000];
+        for k in 0..=10 {
+            env[100 + k] = k as f64 / 10.0; // pulse 1: peak 1.0 at 110
+            env[500 + k] = 0.4 * k as f64 / 10.0; // pulse 2: peak 0.4 at 510
+        }
+        let onsets = detect_onsets(&env, fs, 0.05, 0.003, 0.5);
+        assert_eq!(onsets.len(), 2);
+        // Both cross 50% of their own peak 5 samples up the ramp.
+        assert!((onsets[0] - 105.0 / fs).abs() < 1.0 / fs, "{onsets:?}");
+        assert!((onsets[1] - 505.0 / fs).abs() < 1.0 / fs, "{onsets:?}");
+        // edge_fraction >= 1.0 restores peak timing.
+        let peaks = detect_onsets(&env, fs, 0.05, 0.003, 1.0);
+        assert!((peaks[0] - 110.0 / fs).abs() < 1e-9);
     }
 
     #[test]

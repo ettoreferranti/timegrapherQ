@@ -38,6 +38,8 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasurementDto {
     pub rate_s_per_day: f64,
+    /// ~95% confidence half-width on the rate (s/day).
+    pub rate_ci95_s_per_day: f64,
     pub beat_error_ms: f64,
     pub amplitude_deg: Option<f64>,
     pub bph: u32,
@@ -156,6 +158,7 @@ pub fn record_and_analyze(
             }
             MeasurementDto {
                 rate_s_per_day: m.rate_s_per_day,
+                rate_ci95_s_per_day: m.rate_ci95_s_per_day,
                 beat_error_ms: m.beat_error_ms,
                 amplitude_deg: m.amplitude_deg,
                 beats_detected: m.beats_detected,
@@ -208,6 +211,7 @@ fn base_dto(
 ) -> MeasurementDto {
     MeasurementDto {
         rate_s_per_day: 0.0,
+        rate_ci95_s_per_day: 0.0,
         beat_error_ms: 0.0,
         amplitude_deg: None,
         bph,
@@ -268,7 +272,9 @@ fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Sign
         let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
         let reference = dsp::percentile(&env, cfg.reference_percentile);
         let threshold = cfg.threshold_ratio * reference;
-        let raw_onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s).len();
+        let raw_onsets =
+            dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s, cfg.onset_edge_fraction)
+                .len();
         let (periodicity, detected_bph) =
             timegrapherq_core::measure::dominant_periodicity(&env, sr);
         if periodicity > best.periodicity {

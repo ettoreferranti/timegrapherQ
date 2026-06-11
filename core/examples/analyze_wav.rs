@@ -41,7 +41,8 @@ fn main() {
         let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
         let reference = dsp::percentile(&env, cfg.reference_percentile);
         let threshold = cfg.threshold_ratio * reference;
-        let onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s);
+        let onsets =
+            dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s, cfg.onset_edge_fraction);
         let (periodicity, detected_bph) = measure::dominant_periodicity(&env, sr);
         println!(
             "band {:>5.0} Hz: {:>5} onsets | periodicity {:.2} | detected bph {:?}",
@@ -65,9 +66,10 @@ fn main() {
         }
         match analyze(&samples, sample_rate, &cfg) {
             Some(m) => println!(
-                "bph {:>6}: rate {:+8.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz | masked {:.1} s",
+                "bph {:>6}: rate {:+8.1} ±{:4.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz | masked {:.1} s",
                 bph,
                 m.rate_s_per_day,
+                m.rate_ci95_s_per_day,
                 m.beat_error_ms,
                 m.amplitude_deg.map_or("  n/a ".to_string(), |a| format!("{a:5.0}°")),
                 m.beats_used,

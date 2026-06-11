@@ -11,6 +11,8 @@ export interface DeviceInfo {
 
 export interface MeasurementDto {
   rate_s_per_day: number;
+  /** ~95% confidence half-width on the rate (s/day). */
+  rate_ci95_s_per_day: number;
   beat_error_ms: number;
   amplitude_deg: number | null;
   bph: number;

@@ -27,7 +27,7 @@ use std::f64::consts::PI;
 /// Seconds in a day; used to convert a rate in s/day into an interval scale.
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
-/// Carrier frequency of a single escapement "click" (Hz).
+/// Default carrier frequency of a single escapement "click" (Hz).
 const TRANSIENT_CARRIER_HZ: f64 = 3_500.0;
 
 /// Exponential decay time constant of a click (seconds).
@@ -55,6 +55,9 @@ pub struct SignalSpec {
     pub noise_amplitude: f64,
     /// PRNG seed for reproducible noise.
     pub seed: u64,
+    /// Carrier frequency of each click (Hz). ~3.5 kHz models a contact mic;
+    /// air-coupled recordings carry the tick much higher (8–16 kHz).
+    pub carrier_hz: f64,
 }
 
 impl Default for SignalSpec {
@@ -69,6 +72,7 @@ impl Default for SignalSpec {
             lift_angle_deg: 52.0,
             noise_amplitude: 0.0,
             seed: 0x5EED,
+            carrier_hz: TRANSIENT_CARRIER_HZ,
         }
     }
 }
@@ -121,11 +125,11 @@ impl SplitMix64 {
 
 /// Value of one escapement click at `dt` seconds after its onset.
 /// A damped sinusoid; zero before onset and effectively zero after a few `tau`.
-fn transient(dt: f64) -> f64 {
+fn transient(dt: f64, carrier_hz: f64) -> f64 {
     if dt < 0.0 {
         return 0.0;
     }
-    (-dt / TRANSIENT_DECAY_S).exp() * (2.0 * PI * TRANSIENT_CARRIER_HZ * dt).sin()
+    (-dt / TRANSIENT_DECAY_S).exp() * (2.0 * PI * carrier_hz * dt).sin()
 }
 
 /// Generate a synthetic escapement recording from `spec`.
@@ -179,7 +183,7 @@ pub fn synth_escapement(spec: &SignalSpec) -> SynthSignal {
                     continue;
                 }
                 let sample_t = idx as f64 / sr;
-                samples[idx as usize] += transient(sample_t - click_time);
+                samples[idx as usize] += transient(sample_t - click_time, spec.carrier_hz);
             }
         }
     }

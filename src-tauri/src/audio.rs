@@ -47,6 +47,9 @@ pub struct MeasurementDto {
     pub beats_expected: usize,
     pub periodicity: f64,
     pub detected_bph: Option<f64>,
+    /// Band-pass centre (Hz) the analyzer locked onto (or, without a
+    /// measurement, the most periodic band found).
+    pub band_center_hz: f64,
     pub quality: f64,
     pub sample_rate: u32,
     pub device_name: String,
@@ -152,6 +155,7 @@ pub fn record_and_analyze(
                 beats_detected: m.beats_detected,
                 beats_used: m.beats_used,
                 beats_expected: m.beats_expected,
+                band_center_hz: m.band_center_hz,
                 quality: m.quality,
                 measured: true,
                 ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
@@ -167,6 +171,7 @@ pub fn record_and_analyze(
             ));
             MeasurementDto {
                 beats_expected,
+                band_center_hz: stats.band_center_hz,
                 measured: false,
                 ..base_dto(bph, lift_angle_deg, sample_rate, &actual_name, seconds)
             }
@@ -205,6 +210,7 @@ fn base_dto(
         beats_expected: 0,
         periodicity: 0.0,
         detected_bph: None,
+        band_center_hz: 0.0,
         quality: 0.0,
         sample_rate,
         device_name: device_name.to_string(),
@@ -226,6 +232,8 @@ struct SignalStats {
     raw_onsets: usize,
     periodicity: f64,
     detected_bph: Option<f64>,
+    /// The scanned band with the strongest periodicity (Hz).
+    band_center_hz: f64,
 }
 
 fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> SignalStats {
@@ -238,19 +246,35 @@ fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Sign
         / n)
         .sqrt() as f32;
 
-    let filtered = dsp::bandpass(samples, sr, cfg.bandpass_center_hz, cfg.bandpass_q);
-    let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
-    let reference = dsp::percentile(&env, cfg.reference_percentile);
-    let threshold = cfg.threshold_ratio * reference;
-    let raw_onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s).len();
-    let (periodicity, detected_bph) = timegrapherq_core::measure::dominant_periodicity(&env, sr);
-
-    SignalStats {
+    // Scan the same bands as the analyzer and report the most periodic one, so
+    // the diagnostics describe the best view of the signal, not a fixed band.
+    let mut best = SignalStats {
         rms,
-        raw_onsets,
-        periodicity,
-        detected_bph,
+        raw_onsets: 0,
+        periodicity: -1.0,
+        detected_bph: None,
+        band_center_hz: cfg.bandpass_center_hz,
+    };
+    for hz in timegrapherq_core::measure::candidate_band_centers(cfg, sr) {
+        let filtered = dsp::bandpass(samples, sr, hz, cfg.bandpass_q);
+        let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
+        let reference = dsp::percentile(&env, cfg.reference_percentile);
+        let threshold = cfg.threshold_ratio * reference;
+        let raw_onsets = dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s).len();
+        let (periodicity, detected_bph) =
+            timegrapherq_core::measure::dominant_periodicity(&env, sr);
+        if periodicity > best.periodicity {
+            best = SignalStats {
+                rms,
+                raw_onsets,
+                periodicity,
+                detected_bph,
+                band_center_hz: hz,
+            };
+        }
     }
+    best.periodicity = best.periodicity.max(0.0);
+    best
 }
 
 fn expected_beats(n_samples: usize, sample_rate: u32, bph: u32) -> usize {

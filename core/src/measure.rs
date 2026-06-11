@@ -12,6 +12,12 @@
 
 use crate::{amplitude_degrees, dsp};
 
+/// Band-pass centres scanned by default. Tick energy depends on the capture
+/// path: contact microphones pick up body-conducted sound around 2–4 kHz,
+/// while air-coupled microphones (phone, laptop) mostly catch the escapement's
+/// high-frequency snap at 8–16 kHz.
+pub const DEFAULT_BAND_CENTERS_HZ: [f64; 5] = [3000.0, 6000.0, 9000.0, 12000.0, 15000.0];
+
 /// Tunable parameters for [`analyze`]. Construct with [`AnalysisConfig::new`]
 /// to get sensible DSP defaults and override fields as needed.
 #[derive(Debug, Clone)]
@@ -20,8 +26,12 @@ pub struct AnalysisConfig {
     pub bph: u32,
     /// Movement lift angle (degrees) — required for amplitude.
     pub lift_angle_deg: f64,
-    /// Band-pass centre frequency (Hz).
+    /// Band-pass centre frequency (Hz), used when `band_centers_hz` is empty.
     pub bandpass_center_hz: f64,
+    /// Band-pass centres to scan; [`analyze`] keeps the band that yields the
+    /// most confident measurement. Leave empty to use `bandpass_center_hz`
+    /// alone (no scan).
+    pub band_centers_hz: Vec<f64>,
     /// Band-pass Q (bandwidth ≈ centre / Q).
     pub bandpass_q: f64,
     /// Envelope smoothing time constant (seconds).
@@ -48,6 +58,7 @@ impl AnalysisConfig {
             bph,
             lift_angle_deg,
             bandpass_center_hz: 3000.0,
+            band_centers_hz: DEFAULT_BAND_CENTERS_HZ.to_vec(),
             bandpass_q: 0.7,
             envelope_tau_s: 0.0008,
             reference_percentile: 0.99,
@@ -83,6 +94,8 @@ pub struct Measurement {
     pub periodicity: f64,
     /// Beat frequency implied by the dominant periodicity (bph), if any.
     pub detected_bph: Option<f64>,
+    /// Band-pass centre (Hz) that produced this measurement.
+    pub band_center_hz: f64,
     /// Confidence in [0, 1]: how much to trust this measurement.
     pub quality: f64,
 }
@@ -99,13 +112,57 @@ struct Beat {
 /// Analyse `samples` and return the timegrapher metrics, or `None` if too few
 /// beats were detected to measure at all. A successful return may still carry a
 /// low [`Measurement::quality`] — callers should surface that to the user.
+///
+/// Runs the pipeline once per candidate band centre (see
+/// [`candidate_band_centers`]) and keeps the most confident result, so the
+/// tick is found whether its energy sits low (contact mic) or high (air mic).
 pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Option<Measurement> {
+    let mut best: Option<Measurement> = None;
+    for hz in candidate_band_centers(cfg, f64::from(sample_rate)) {
+        let m = analyze_band(samples, sample_rate, cfg, hz);
+        let better = match (&m, &best) {
+            (Some(m), Some(b)) => m.quality > b.quality,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if better {
+            best = m;
+        }
+    }
+    best
+}
+
+/// The band-pass centres [`analyze`] will scan for `cfg` at `sample_rate`:
+/// `cfg.band_centers_hz` (or `cfg.bandpass_center_hz` if that list is empty)
+/// with centres at or above the Nyquist region dropped. Exposed so callers can
+/// compute diagnostics over the same bands the analyzer sees.
+pub fn candidate_band_centers(cfg: &AnalysisConfig, sample_rate: f64) -> Vec<f64> {
+    let max_center = 0.45 * sample_rate;
+    let mut centers: Vec<f64> = if cfg.band_centers_hz.is_empty() {
+        vec![cfg.bandpass_center_hz]
+    } else {
+        cfg.band_centers_hz.clone()
+    };
+    centers.retain(|&hz| hz > 0.0 && hz < max_center);
+    if centers.is_empty() {
+        centers.push(cfg.bandpass_center_hz.min(max_center * 0.99));
+    }
+    centers
+}
+
+/// The single-band measurement pipeline behind [`analyze`].
+fn analyze_band(
+    samples: &[f32],
+    sample_rate: u32,
+    cfg: &AnalysisConfig,
+    band_center_hz: f64,
+) -> Option<Measurement> {
     let sr = f64::from(sample_rate);
     let duration_s = samples.len() as f64 / sr;
     let nominal_period = 3600.0 / f64::from(cfg.bph);
     let beats_expected = (duration_s / nominal_period).round() as usize;
 
-    let filtered = dsp::bandpass(samples, sr, cfg.bandpass_center_hz, cfg.bandpass_q);
+    let filtered = dsp::bandpass(samples, sr, band_center_hz, cfg.bandpass_q);
     let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
     let (periodicity, detected_bph) = dominant_periodicity(&env, sr);
     let reference = dsp::percentile(&env, cfg.reference_percentile);
@@ -171,6 +228,7 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
         beats_expected,
         periodicity,
         detected_bph,
+        band_center_hz,
         quality,
     })
 }
@@ -507,6 +565,53 @@ mod tests {
             m.quality
         );
         assert!(m.quality > 0.6, "quality={}", m.quality);
+    }
+
+    #[test]
+    fn band_scan_finds_high_frequency_tick() {
+        // An air-coupled recording (phone/laptop mic at a distance) carries the
+        // tick at 8–16 kHz, far from the 3 kHz contact-mic default. The band
+        // scan must still lock on.
+        let m = analyze_spec(&SignalSpec {
+            duration_s: 15.0,
+            sample_rate: 48_000,
+            rate_s_per_day: 10.0,
+            carrier_hz: 12_000.0,
+            noise_amplitude: 0.02,
+            seed: 3,
+            ..Default::default()
+        });
+        assert!(
+            (m.rate_s_per_day - 10.0).abs() < 1.0,
+            "rate={}",
+            m.rate_s_per_day
+        );
+        assert!(m.quality > 0.7, "quality={}", m.quality);
+        assert!(
+            m.band_center_hz >= 9_000.0,
+            "expected a high band, got {} Hz",
+            m.band_center_hz
+        );
+    }
+
+    #[test]
+    fn candidate_bands_respect_nyquist() {
+        let cfg = AnalysisConfig::new(28_800, 52.0);
+        // At 48 kHz all default centres are usable.
+        assert_eq!(
+            candidate_band_centers(&cfg, 48_000.0).len(),
+            DEFAULT_BAND_CENTERS_HZ.len()
+        );
+        // A 16 kHz (Bluetooth-ish) input must not scan centres above ~7.2 kHz.
+        let bands = candidate_band_centers(&cfg, 16_000.0);
+        assert!(bands.iter().all(|&hz| hz < 7_200.0), "bands={bands:?}");
+        assert!(!bands.is_empty());
+        // An empty scan list falls back to the single configured centre.
+        let single = AnalysisConfig {
+            band_centers_hz: Vec::new(),
+            ..AnalysisConfig::new(28_800, 52.0)
+        };
+        assert_eq!(candidate_band_centers(&single, 48_000.0), vec![3000.0]);
     }
 
     #[test]

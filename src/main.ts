@@ -83,6 +83,7 @@ function showMetrics(m: MeasurementDto): void {
       ? `detected ~${Math.round(m.detected_bph)} bph`
       : "no periodic tick",
     `${m.raw_onsets} transients (~${m.beats_expected} expected)`,
+    `band ${(m.band_center_hz / 1000).toFixed(1)} kHz`,
     `peak ${m.peak_level.toFixed(3)}`,
     `rms ${m.rms_level.toFixed(4)}`,
   ];

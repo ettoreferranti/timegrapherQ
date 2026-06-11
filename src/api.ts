@@ -20,6 +20,8 @@ export interface MeasurementDto {
   beats_expected: number;
   periodicity: number;
   detected_bph: number | null;
+  /** Band-pass centre (Hz) the analyzer locked onto. */
+  band_center_hz: number;
   quality: number;
   sample_rate: number;
   device_name: string;

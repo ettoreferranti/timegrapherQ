@@ -29,10 +29,15 @@ fn main() {
     println!("file: {path}");
     println!("{:.1} s @ {} Hz | peak {:.4} | rms {:.5}", duration, sample_rate, peak, rms);
 
-    // Per-band signal diagnostics with the same DSP front-end as the app.
+    // Per-band signal diagnostics with the same DSP front-end as the app,
+    // computed on the outlier-suppressed signal that `analyze` measures.
     let cfg = AnalysisConfig::new(28_800, 52.0);
+    let (cleaned, masked_s) = measure::suppress_outliers(&samples, sample_rate, &cfg);
+    if masked_s > 0.0 {
+        println!("outlier suppression silenced {masked_s:.1} s of loud noise");
+    }
     for hz in measure::candidate_band_centers(&cfg, sr) {
-        let filtered = dsp::bandpass(&samples, sr, hz, cfg.bandpass_q);
+        let filtered = dsp::bandpass(&cleaned, sr, hz, cfg.bandpass_q);
         let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
         let reference = dsp::percentile(&env, cfg.reference_percentile);
         let threshold = cfg.threshold_ratio * reference;
@@ -60,7 +65,7 @@ fn main() {
         }
         match analyze(&samples, sample_rate, &cfg) {
             Some(m) => println!(
-                "bph {:>6}: rate {:+8.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz",
+                "bph {:>6}: rate {:+8.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz | masked {:.1} s",
                 bph,
                 m.rate_s_per_day,
                 m.beat_error_ms,
@@ -69,7 +74,8 @@ fn main() {
                 m.beats_detected,
                 m.beats_expected,
                 m.quality,
-                m.band_center_hz
+                m.band_center_hz,
+                m.masked_s
             ),
             None => println!("bph {bph:>6}: no measurement"),
         }

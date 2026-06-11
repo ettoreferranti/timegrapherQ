@@ -87,6 +87,8 @@ function showMetrics(m: MeasurementDto): void {
     `peak ${m.peak_level.toFixed(3)}`,
     `rms ${m.rms_level.toFixed(4)}`,
   ];
+  if (m.masked_seconds > 0)
+    parts.push(`ignored ${m.masked_seconds.toFixed(1)} s of loud noise`);
   if (m.recording_path) parts.push(`saved: ${m.recording_path}`);
   el("diag").textContent = parts.join(" · ");
 

@@ -49,6 +49,12 @@ pub struct AnalysisConfig {
     /// Beats whose onset deviates from the fitted line by more than this
     /// fraction of the nominal period are rejected as outliers.
     pub max_residual_ratio: f64,
+    /// Window length (seconds) for loud-outlier suppression; should exceed one
+    /// beat period so a typical window's peak is the tick peak.
+    pub outlier_window_s: f64,
+    /// Windows whose peak exceeds this multiple of the median window peak are
+    /// silenced before analysis (handling bumps, coughs). `<= 0` disables.
+    pub outlier_peak_ratio: f64,
 }
 
 impl AnalysisConfig {
@@ -66,6 +72,8 @@ impl AnalysisConfig {
             refractory_s: 0.003,
             beat_gap_ratio: 0.4,
             max_residual_ratio: 0.25,
+            outlier_window_s: 0.25,
+            outlier_peak_ratio: 5.0,
         }
     }
 }
@@ -96,6 +104,9 @@ pub struct Measurement {
     pub detected_bph: Option<f64>,
     /// Band-pass centre (Hz) that produced this measurement.
     pub band_center_hz: f64,
+    /// Seconds silenced as loud outliers (handling bumps, coughs) before
+    /// analysis.
+    pub masked_s: f64,
     /// Confidence in [0, 1]: how much to trust this measurement.
     pub quality: f64,
 }
@@ -117,9 +128,10 @@ struct Beat {
 /// [`candidate_band_centers`]) and keeps the most confident result, so the
 /// tick is found whether its energy sits low (contact mic) or high (air mic).
 pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Option<Measurement> {
+    let (cleaned, masked_s) = suppress_outliers(samples, sample_rate, cfg);
     let mut best: Option<Measurement> = None;
     for hz in candidate_band_centers(cfg, f64::from(sample_rate)) {
-        let m = analyze_band(samples, sample_rate, cfg, hz);
+        let m = analyze_band(&cleaned, sample_rate, cfg, hz, masked_s);
         let better = match (&m, &best) {
             (Some(m), Some(b)) => m.quality > b.quality,
             (Some(_), None) => true,
@@ -130,6 +142,23 @@ pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Optio
         }
     }
     best
+}
+
+/// Silence loud outlier sections (handling bumps, coughs) per the config,
+/// returning the cleaned samples and the seconds silenced. [`analyze`] applies
+/// this itself; exposed so callers can compute diagnostics on the same signal
+/// the analyzer sees.
+pub fn suppress_outliers(
+    samples: &[f32],
+    sample_rate: u32,
+    cfg: &AnalysisConfig,
+) -> (Vec<f32>, f64) {
+    dsp::suppress_loud_windows(
+        samples,
+        f64::from(sample_rate),
+        cfg.outlier_window_s,
+        cfg.outlier_peak_ratio,
+    )
 }
 
 /// The band-pass centres [`analyze`] will scan for `cfg` at `sample_rate`:
@@ -150,17 +179,20 @@ pub fn candidate_band_centers(cfg: &AnalysisConfig, sample_rate: f64) -> Vec<f64
     centers
 }
 
-/// The single-band measurement pipeline behind [`analyze`].
+/// The single-band measurement pipeline behind [`analyze`]. Expects samples
+/// already cleaned by [`suppress_outliers`]; `masked_s` (the silenced
+/// duration) is excluded from the expected beat count.
 fn analyze_band(
     samples: &[f32],
     sample_rate: u32,
     cfg: &AnalysisConfig,
     band_center_hz: f64,
+    masked_s: f64,
 ) -> Option<Measurement> {
     let sr = f64::from(sample_rate);
     let duration_s = samples.len() as f64 / sr;
     let nominal_period = 3600.0 / f64::from(cfg.bph);
-    let beats_expected = (duration_s / nominal_period).round() as usize;
+    let beats_expected = ((duration_s - masked_s).max(0.0) / nominal_period).round() as usize;
 
     let filtered = dsp::bandpass(samples, sr, band_center_hz, cfg.bandpass_q);
     let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
@@ -229,6 +261,7 @@ fn analyze_band(
         periodicity,
         detected_bph,
         band_center_hz,
+        masked_s,
         quality,
     })
 }
@@ -592,6 +625,48 @@ mod tests {
             "expected a high band, got {} Hz",
             m.band_center_hz
         );
+    }
+
+    #[test]
+    fn loud_bumps_are_masked_not_fatal() {
+        // A handling bump / cough dwarfs the ticks (recordings show 30x). It
+        // must be silenced rather than allowed to wreck the onset threshold,
+        // and the rate must still come out right.
+        let spec = SignalSpec {
+            duration_s: 20.0,
+            rate_s_per_day: 5.0,
+            noise_amplitude: 0.02,
+            seed: 9,
+            ..Default::default()
+        };
+        let mut sig = synth_escapement(&spec);
+        let sr = sig.sample_rate as usize;
+        // Scale ticks down to a realistic air-mic level, then add two loud
+        // broadband bursts (a bump at 2 s, a cough at 11 s).
+        for s in &mut sig.samples {
+            *s *= 0.02;
+        }
+        let mut rng = 1u64;
+        let mut noise = move || {
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((rng >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+        };
+        for i in 2 * sr..(2 * sr + sr / 2) {
+            sig.samples[i] += noise();
+        }
+        for i in 11 * sr..(11 * sr + sr / 4) {
+            sig.samples[i] += noise();
+        }
+
+        let cfg = AnalysisConfig::new(spec.bph, spec.lift_angle_deg);
+        let m = analyze(&sig.samples, sig.sample_rate, &cfg).expect("a measurement");
+        assert!(m.masked_s > 0.5, "masked_s={}", m.masked_s);
+        assert!(
+            (m.rate_s_per_day - 5.0).abs() < 1.0,
+            "rate={}",
+            m.rate_s_per_day
+        );
+        assert!(m.quality > 0.7, "quality={}", m.quality);
     }
 
     #[test]

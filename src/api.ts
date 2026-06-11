@@ -22,6 +22,8 @@ export interface MeasurementDto {
   detected_bph: number | null;
   /** Band-pass centre (Hz) the analyzer locked onto. */
   band_center_hz: number;
+  /** Seconds silenced as loud outliers (handling bumps, coughs). */
+  masked_seconds: number;
   quality: number;
   sample_rate: number;
   device_name: string;

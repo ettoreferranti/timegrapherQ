@@ -50,6 +50,8 @@ pub struct MeasurementDto {
     /// Band-pass centre (Hz) the analyzer locked onto (or, without a
     /// measurement, the most periodic band found).
     pub band_center_hz: f64,
+    /// Seconds silenced as loud outliers (handling bumps, coughs).
+    pub masked_seconds: f64,
     pub quality: f64,
     pub sample_rate: u32,
     pub device_name: String,
@@ -119,7 +121,11 @@ pub fn record_and_analyze(
 
     let cfg = AnalysisConfig::new(bph, lift_angle_deg);
     let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
-    let stats = signal_stats(&samples, sample_rate, &cfg);
+    // Diagnostics are computed on the outlier-suppressed signal — the same one
+    // `analyze` measures — so they aren't dominated by bumps and coughs.
+    let (cleaned, masked_seconds) =
+        timegrapherq_core::measure::suppress_outliers(&samples, sample_rate, &cfg);
+    let stats = signal_stats(&cleaned, sample_rate, &cfg);
     let beats_expected = expected_beats(samples.len(), sample_rate, bph);
 
     let recording_path = if save_recording {
@@ -184,6 +190,7 @@ pub fn record_and_analyze(
         raw_onsets: stats.raw_onsets,
         periodicity: stats.periodicity,
         detected_bph: stats.detected_bph,
+        masked_seconds,
         degraded_input,
         recording_path,
         warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
@@ -211,6 +218,7 @@ fn base_dto(
         periodicity: 0.0,
         detected_bph: None,
         band_center_hz: 0.0,
+        masked_seconds: 0.0,
         quality: 0.0,
         sample_rate,
         device_name: device_name.to_string(),

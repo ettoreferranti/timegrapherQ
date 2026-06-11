@@ -115,6 +115,64 @@ pub fn detect_onsets(env: &[f64], sample_rate: f64, threshold: f64, refractory_s
     onsets
 }
 
+/// Silence windows whose peak is far above the typical (median) window peak —
+/// handling bumps, coughs, dropped tools — returning the cleaned samples and
+/// how many seconds were silenced.
+///
+/// With `window_s` longer than a beat period, a normal window's peak is the
+/// tick peak, so the median tracks the tick level and a `ratio` of a few keeps
+/// every tick while rejecting transients an order of magnitude louder. Short
+/// fades at the mask edges avoid step discontinuities that would ring through
+/// the band-pass filter. A `ratio <= 0` disables suppression.
+pub fn suppress_loud_windows(
+    samples: &[f32],
+    sample_rate: f64,
+    window_s: f64,
+    ratio: f64,
+) -> (Vec<f32>, f64) {
+    let w = (window_s * sample_rate).round() as usize;
+    // Need a clear majority of windows for the median to mean anything.
+    if ratio <= 0.0 || w == 0 || samples.len() < 8 * w {
+        return (samples.to_vec(), 0.0);
+    }
+
+    let peaks: Vec<f32> = samples
+        .chunks(w)
+        .map(|c| c.iter().fold(0.0_f32, |m, &s| m.max(s.abs())))
+        .collect();
+    let mut sorted = peaks.clone();
+    sorted.sort_by(f32::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    if median <= 0.0 {
+        return (samples.to_vec(), 0.0);
+    }
+
+    let limit = ratio as f32 * median;
+    let mut out = samples.to_vec();
+    let fade = ((0.002 * sample_rate) as usize).max(1);
+    let mut masked_samples = 0usize;
+    for (i, &p) in peaks.iter().enumerate() {
+        if p <= limit {
+            continue;
+        }
+        let start = i * w;
+        let end = ((i + 1) * w).min(out.len());
+        masked_samples += end - start;
+        out[start..end].fill(0.0);
+        // Fade the kept neighbours toward the silence on both sides.
+        for k in 0..fade {
+            let g = k as f32 / fade as f32;
+            if start > k {
+                out[start - 1 - k] *= g;
+            }
+            if end + k < out.len() {
+                out[end + k] *= g;
+            }
+        }
+    }
+    (out, masked_samples as f64 / sample_rate)
+}
+
 /// The `p`-quantile (0.0–1.0) of `values` via nearest-rank on a sorted copy.
 /// Used to derive a detection reference level that ignores a few extreme
 /// outliers (e.g. handling bumps), unlike the raw maximum.
@@ -264,6 +322,34 @@ mod tests {
     #[test]
     fn decimate_mean_averages_blocks() {
         assert_eq!(decimate_mean(&[1.0, 3.0, 5.0, 7.0], 2), vec![2.0, 6.0]);
+    }
+
+    #[test]
+    fn suppress_loud_windows_masks_only_the_bump() {
+        // 10 s at 1 kHz: a steady "tick" peak of 0.01 per window, plus a loud
+        // bump (0.5) in one window. Only the bump window should be silenced.
+        let sr = 1000.0; // 0.25 s windows = 250 samples; the bump fills window 8
+        let mut s = vec![0.0_f32; 10_000];
+        for i in (0..s.len()).step_by(125) {
+            s[i] = 0.01; // ticks
+        }
+        for x in &mut s[2_000..2_250] {
+            *x = 0.5; // bump fills window 8
+        }
+        let (out, masked) = suppress_loud_windows(&s, sr, 0.25, 5.0);
+        assert!((masked - 0.25).abs() < 1e-9, "masked={masked}");
+        assert!(out[2_000..2_250].iter().all(|&x| x == 0.0));
+        // Ticks well away from the bump survive untouched.
+        assert_eq!(out[5_000], 0.01);
+        assert_eq!(out[125], 0.01);
+        // A clean signal is untouched.
+        let clean: Vec<f32> = s.iter().map(|&x| x.min(0.01)).collect();
+        let (out, masked) = suppress_loud_windows(&clean, sr, 0.25, 5.0);
+        assert_eq!(masked, 0.0);
+        assert_eq!(out, clean);
+        // Disabled by ratio <= 0.
+        let (_, masked) = suppress_loud_windows(&s, sr, 0.25, 0.0);
+        assert_eq!(masked, 0.0);
     }
 
     #[test]

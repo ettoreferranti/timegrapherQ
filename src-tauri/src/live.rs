@@ -60,6 +60,18 @@ pub struct LiveBeat {
     pub kept: bool,
 }
 
+/// The full classification of the current analysis window. Re-emitted every
+/// tick so the trace repaints dots whose kept/rejected status changed as the
+/// window slid (right after a disturbance, the newest beats start out as the
+/// minority segment and would otherwise stay wrongly red forever).
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveBeatsBatch {
+    /// Absolute start of the analysis window (seconds since session start);
+    /// the frontend replaces all dots at or after this time.
+    pub window_start_s: f64,
+    pub beats: Vec<LiveBeat>,
+}
+
 /// Rolling snapshot for the live readouts.
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveMetrics {
@@ -162,13 +174,11 @@ fn analysis_thread(
     lift_angle_deg: f64,
 ) {
     let sr = f64::from(sample_rate);
-    let nominal_period = 3600.0 / f64::from(bph);
     let keep_n = (KEEP_S * sr) as usize;
     let window_n = (WINDOW_S * sr) as usize;
 
     let mut trimmed: u64 = 0; // samples discarded from the front of `buf`
     let mut locked_band: Option<f64> = None;
-    let mut last_emitted_s = f64::NEG_INFINITY;
 
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(TICK);
@@ -210,26 +220,25 @@ fn analysis_thread(
                     locked_band = Some(m.band_center_hz);
                 }
 
-                // Emit only beats we have not sent yet. Onsets are stable
-                // across overlapping windows (they are raw detections), so a
-                // half-period guard suffices to deduplicate.
+                // Emit the whole window's dots each tick; the frontend
+                // replaces everything at or after `window_start_s`, so a
+                // beat's colour updates when a later, better-informed window
+                // reclassifies it.
                 let window_start_s = window_start as f64 / sr;
                 let beats: Vec<LiveBeat> = dots
                     .iter()
-                    .filter_map(|d| {
-                        let t_s = window_start_s + d.onset_s;
-                        (t_s > last_emitted_s + 0.4 * nominal_period).then_some(LiveBeat {
-                            t_s,
-                            kept: d.kept,
-                        })
+                    .map(|d| LiveBeat {
+                        t_s: window_start_s + d.onset_s,
+                        kept: d.kept,
                     })
                     .collect();
-                if let Some(last) = beats.last() {
-                    last_emitted_s = last.t_s;
-                }
-                if !beats.is_empty() {
-                    let _ = app.emit("live-beats", &beats);
-                }
+                let _ = app.emit(
+                    "live-beats",
+                    LiveBeatsBatch {
+                        window_start_s,
+                        beats,
+                    },
+                );
 
                 let _ = app.emit(
                     "live-metrics",

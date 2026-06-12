@@ -129,6 +129,13 @@ export interface LiveBeat {
   kept: boolean;
 }
 
+/** Full window classification streamed as the "live-beats" event. */
+export interface LiveBeatsBatch {
+  /** Replace all dots at or after this time (seconds since session start). */
+  window_start_s: number;
+  beats: LiveBeat[];
+}
+
 /** Rolling snapshot streamed from the live session ("live-metrics" event). */
 export interface LiveMetrics {
   elapsed_s: number;

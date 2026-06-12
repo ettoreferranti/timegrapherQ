@@ -5,6 +5,7 @@ import {
   api,
   el,
   type LiveBeat,
+  type LiveBeatsBatch,
   type LiveMetrics,
   type MeasurementDto,
   type Test,
@@ -196,9 +197,17 @@ async function onToggleLive(): Promise<void> {
   liveBeats = [];
   try {
     liveUnlisteners.push(
-      await listen<LiveBeat[]>("live-beats", (e) => {
-        liveBeats.push(...e.payload);
-        const newest = liveBeats[liveBeats.length - 1].t_s;
+      await listen<LiveBeatsBatch>("live-beats", (e) => {
+        // The batch re-classifies the whole analysis window: replace our dots
+        // in that range so colours heal as the window slides (beats outside
+        // the window keep their last classification).
+        const { window_start_s, beats } = e.payload;
+        liveBeats = liveBeats
+          .filter((b) => b.t_s < window_start_s)
+          .concat(beats);
+        const newest = liveBeats.length
+          ? liveBeats[liveBeats.length - 1].t_s
+          : 0;
         liveBeats = liveBeats.filter((b) => b.t_s >= newest - TRACE_SPAN_S - 5);
         drawTrace();
       }),

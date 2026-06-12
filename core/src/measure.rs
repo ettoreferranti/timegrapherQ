@@ -257,26 +257,36 @@ fn analyze_band(
         b.index = ((b.onset - t0) / nominal_period).round();
     }
 
+    // A sustained step in beat phase (looped test audio, dropped capture
+    // samples) means the window contains *two* coherent tick trains offset in
+    // time; no single line fits both, and a fit across the step reports a
+    // confidently wrong rate. Measure only the longest coherent segment — the
+    // discarded beats become "rejected" dots and the lost coverage lowers the
+    // confidence score honestly.
+    let (seg_start, seg_end) = longest_coherent_segment(&beats, nominal_period);
+    let segment = &beats[seg_start..seg_end];
+
     // First fit, then reject onsets that lie far from the line (spurious
     // detections / merged beats), then refit on the survivors. Theil–Sen
     // (median of pairwise slopes) keeps both fits honest when a fraction of
     // onsets sit on the wrong sub-pulse of their tick.
-    let idx: Vec<f64> = beats.iter().map(|b| b.index).collect();
-    let onset_t: Vec<f64> = beats.iter().map(|b| b.onset).collect();
+    let idx: Vec<f64> = segment.iter().map(|b| b.index).collect();
+    let onset_t: Vec<f64> = segment.iter().map(|b| b.onset).collect();
     let (slope, intercept) = theil_sen(&idx, &onset_t)?;
     let tol = cfg.max_residual_ratio * nominal_period;
     let keep = |b: &Beat| (b.onset - (intercept + slope * b.index)).abs() <= tol;
-    let kept: Vec<Beat> = beats.iter().copied().filter(keep).collect();
+    let kept: Vec<Beat> = segment.iter().copied().filter(keep).collect();
     if kept.len() < 4 {
         return None;
     }
     let dots: Vec<BeatDot> = beats
         .iter()
-        .map(|b| BeatDot {
+        .enumerate()
+        .map(|(i, b)| BeatDot {
             onset_s: b.onset,
             index: b.index,
             spacing_s: b.spacing,
-            kept: keep(b),
+            kept: (seg_start..seg_end).contains(&i) && keep(b),
         })
         .collect();
 
@@ -347,6 +357,55 @@ pub fn dominant_periodicity(env: &[f64], sr: f64) -> (f64, Option<f64>) {
         }
         _ => (0.0, None),
     }
+}
+
+/// Find the longest run of `beats` (already carrying reconstructed indices)
+/// that is free of sustained phase steps, returning its `[start, end)` range.
+///
+/// Each beat's drift versus nominal is `d = onset − index × period`; a real
+/// watch changes `d` slowly (a huge ±500 s/d rate moves it ~0.6% of a period
+/// per beat), while looped test audio or dropped capture samples shift it
+/// abruptly and *keep* it shifted. A step is declared where the medians of
+/// `d` over the [`STEP_W`] beats before and after a point differ by more than
+/// a tolerance adapted to the recording's own beat-to-beat jitter. Single
+/// outlier beats don't trigger it (medians), and noisy recordings raise the
+/// tolerance rather than fragmenting.
+fn longest_coherent_segment(beats: &[Beat], nominal_period: f64) -> (usize, usize) {
+    /// Beats compared on each side of a candidate step.
+    const STEP_W: usize = 4;
+    let n = beats.len();
+    if n < 2 * STEP_W + 2 {
+        return (0, n);
+    }
+
+    let d: Vec<f64> = beats
+        .iter()
+        .map(|b| b.onset - b.index * nominal_period)
+        .collect();
+    // Typical beat-to-beat drift change, as a robust scale for "no step".
+    let mut diffs: Vec<f64> = d.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+    let jitter = median(&mut diffs);
+    let step_tol = (6.0 * jitter).max(0.05 * nominal_period);
+
+    let mut boundaries = vec![0usize];
+    let mut i = STEP_W;
+    while i + STEP_W <= n {
+        let mut before = d[i - STEP_W..i].to_vec();
+        let mut after = d[i..i + STEP_W].to_vec();
+        if (median(&mut before) - median(&mut after)).abs() > step_tol {
+            boundaries.push(i);
+            i += STEP_W; // a step spans one comparison window; skip past it
+        } else {
+            i += 1;
+        }
+    }
+    boundaries.push(n);
+
+    boundaries
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .max_by_key(|(s, e)| e - s)
+        .unwrap_or((0, n))
 }
 
 /// Group consecutive onsets into beats. Onsets within `beat_gap_ratio` of the
@@ -780,6 +839,42 @@ mod tests {
             m.rate_s_per_day,
             m.rate_ci95_s_per_day
         );
+    }
+
+    #[test]
+    fn phase_step_is_confined_to_longest_segment() {
+        // Simulate looped playback / dropped capture samples: two copies of
+        // the same clip butted together, the second starting mid-period, so
+        // the tick phase jumps at the seam and stays shifted. A fit across
+        // the seam would report a large fake rate; the change-point check
+        // must instead measure one coherent segment.
+        let spec = SignalSpec {
+            duration_s: 10.0,
+            rate_s_per_day: 0.0,
+            noise_amplitude: 0.02,
+            seed: 21,
+            ..Default::default()
+        };
+        let sig = synth_escapement(&spec);
+        let skip = (0.4 * 3600.0 / f64::from(spec.bph) * f64::from(sig.sample_rate)) as usize;
+        let mut looped = sig.samples.clone();
+        looped.extend_from_slice(&sig.samples[skip..]); // ~20 s, seam at 10 s
+
+        let cfg = AnalysisConfig::new(spec.bph, spec.lift_angle_deg);
+        let (m, dots) = analyze_with_beats(&looped, sig.sample_rate, &cfg).expect("measurement");
+        assert!(
+            m.rate_s_per_day.abs() < 3.0,
+            "seam leaked into the fit: rate={}",
+            m.rate_s_per_day
+        );
+        // Roughly half the beats (the other side of the seam) are rejected,
+        // and the lost coverage shows up as reduced confidence.
+        let kept = dots.iter().filter(|d| d.kept).count() as f64 / dots.len() as f64;
+        assert!(
+            (0.3..=0.7).contains(&kept),
+            "kept fraction {kept} should be about one segment"
+        );
+        assert!(m.quality < 0.8, "quality={} should reflect lost coverage", m.quality);
     }
 
     #[test]

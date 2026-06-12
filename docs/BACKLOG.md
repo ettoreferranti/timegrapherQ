@@ -1,6 +1,6 @@
 # TimegrapherQ — Backlog
 
-> Living document. Status: **Draft v0.1**. Last updated: 2026-06-09.
+> Living document. Status: **Draft v0.1**. Last updated: 2026-06-12.
 > Priority follows decision **D4: core measurement accuracy first**.
 > Story IDs are stable; check items off as completed.
 
@@ -58,12 +58,24 @@
 
 Backend storage layer is unit-tested (CRUD round-trips, cascade delete, idempotent migrations, settings round-trip). UI verification is manual.
 
+## Post-M2 — Measurement accuracy & capture improvements ✅ (done 2026-06-11)
+*Unplanned work driven by real recordings (same watch, three phone clips).*
+
+- [x] **P2-1** Band-pass centre scan (3/6/9/12/15 kHz; Nyquist-aware): air-coupled recordings carry tick energy at 8–16 kHz, far from the 3 kHz contact-mic default. Analyzer keeps the most confident band; chosen band reported in DTO/UI.
+- [x] **P2-2** Loud-outlier suppression (`dsp::suppress_loud_windows`): windows peaking >5× the median window peak (handling bumps, coughs) are silenced with fades before analysis; masked seconds reported.
+- [x] **P2-3** Onset timing on the height-normalised leading edge (50% of each run's own peak, interpolated) instead of the envelope peak; rate fit via Theil–Sen (prefit + final). Per-band rate spread on one real file collapsed from 24 s/d to 0.2 s/d; three same-watch recordings went from +12/−6/−15 to +2.3/+0.5/+0.5 s/d.
+- [x] **P2-4** Rate error bars: `rate_ci95_s_per_day` from MAD of fit residuals, shown in UI and persisted with tests (schema v2).
+- [x] **P2-5** Audio file import (`Analyze file…`): symphonia decode (WAV/M4A/AAC/MP3/FLAC/AIFF/OGG), same analysis path as recording, decoded temp WAV for keep-clip.
+
 ## Milestone M3 — Live trace
 *Goal: real-time classic timegrapher experience.*
 
-- [ ] **M3-1** Stream incremental beat events from the analysis thread via Tauri events. *(FR-M7)*
-- [ ] **M3-2** Canvas scrolling two-line trace (slope=rate, gap=beat error, scatter=noise). *(FR-M7)*
-- [ ] **M3-3** Live numeric rate / beat error / amplitude readouts. *(FR-M8)*
+- [x] **M3-1** Stream incremental beat events from the analysis thread via Tauri events. *(FR-M7; done 2026-06-12)*
+  - `live.rs`: capture thread owns the cpal stream; analysis thread re-analyses a 15 s sliding window every 750 ms with the same batch pipeline as record mode (identical numbers by construction). Band scan runs until quality ≥ 0.5, then locks. Beats deduped by absolute onset; events `live-beats` / `live-metrics`.
+- [x] **M3-2** Canvas scrolling two-line trace (slope=rate, gap=beat error, scatter=noise). *(FR-M7; done 2026-06-12)*
+  - y = t mod (2 × nominal period), so tick/tock form two lines; rejected beats drawn as red noise dots; 30 s span; DPR-aware canvas.
+- [x] **M3-3** Live numeric rate / beat error / amplitude readouts. *(FR-M8; done 2026-06-12)*
+  - Rate ±CI, beat error, amplitude, confidence, band, textual VU input level, elapsed. Warm-up (5 s) and no-tick states handled. Live VU meter from M1-12 (FR-A2) covered by the input-level readout.
 - [~] **M3-4** bph auto-detect. *(FR-M9, FR-A4)* — Partial: `detected_bph` from autocorrelation is computed and shown as a diagnostic, and a mismatch with the selected bph warns the user. TODO: optionally drive the measurement from the detected bph / snap to standard rates.
 
 ## Milestone M4 — Visualisation, comparison & export

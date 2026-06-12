@@ -131,6 +131,21 @@ struct Beat {
     index: f64,
 }
 
+/// A beat as exposed to callers (e.g. the live trace): when it landed, its
+/// reconstructed beat number, the within-beat impulse spacing, and whether the
+/// rate fit kept it (rejected beats are the off-line "noise" dots).
+#[derive(Clone, Copy, Debug)]
+pub struct BeatDot {
+    /// Onset time in seconds from the start of the analysed samples.
+    pub onset_s: f64,
+    /// Reconstructed beat number (0 = first beat in the clip).
+    pub index: f64,
+    /// Spacing to the second impulse of the beat, if detected (seconds).
+    pub spacing_s: Option<f64>,
+    /// Whether the beat survived outlier rejection.
+    pub kept: bool,
+}
+
 /// Analyse `samples` and return the timegrapher metrics, or `None` if too few
 /// beats were detected to measure at all. A successful return may still carry a
 /// low [`Measurement::quality`] — callers should surface that to the user.
@@ -139,12 +154,22 @@ struct Beat {
 /// [`candidate_band_centers`]) and keeps the most confident result, so the
 /// tick is found whether its energy sits low (contact mic) or high (air mic).
 pub fn analyze(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Option<Measurement> {
+    analyze_with_beats(samples, sample_rate, cfg).map(|(m, _)| m)
+}
+
+/// Like [`analyze`], but also returns the individual beats behind the
+/// measurement (used by the live trace to plot one dot per beat).
+pub fn analyze_with_beats(
+    samples: &[f32],
+    sample_rate: u32,
+    cfg: &AnalysisConfig,
+) -> Option<(Measurement, Vec<BeatDot>)> {
     let (cleaned, masked_s) = suppress_outliers(samples, sample_rate, cfg);
-    let mut best: Option<Measurement> = None;
+    let mut best: Option<(Measurement, Vec<BeatDot>)> = None;
     for hz in candidate_band_centers(cfg, f64::from(sample_rate)) {
         let m = analyze_band(&cleaned, sample_rate, cfg, hz, masked_s);
         let better = match (&m, &best) {
-            (Some(m), Some(b)) => m.quality > b.quality,
+            (Some((m, _)), Some((b, _))) => m.quality > b.quality,
             (Some(_), None) => true,
             (None, _) => false,
         };
@@ -199,7 +224,7 @@ fn analyze_band(
     cfg: &AnalysisConfig,
     band_center_hz: f64,
     masked_s: f64,
-) -> Option<Measurement> {
+) -> Option<(Measurement, Vec<BeatDot>)> {
     let sr = f64::from(sample_rate);
     let duration_s = samples.len() as f64 / sr;
     let nominal_period = 3600.0 / f64::from(cfg.bph);
@@ -240,14 +265,20 @@ fn analyze_band(
     let onset_t: Vec<f64> = beats.iter().map(|b| b.onset).collect();
     let (slope, intercept) = theil_sen(&idx, &onset_t)?;
     let tol = cfg.max_residual_ratio * nominal_period;
-    let kept: Vec<Beat> = beats
-        .iter()
-        .copied()
-        .filter(|b| (b.onset - (intercept + slope * b.index)).abs() <= tol)
-        .collect();
+    let keep = |b: &Beat| (b.onset - (intercept + slope * b.index)).abs() <= tol;
+    let kept: Vec<Beat> = beats.iter().copied().filter(keep).collect();
     if kept.len() < 4 {
         return None;
     }
+    let dots: Vec<BeatDot> = beats
+        .iter()
+        .map(|b| BeatDot {
+            onset_s: b.onset,
+            index: b.index,
+            spacing_s: b.spacing,
+            kept: keep(b),
+        })
+        .collect();
 
     let kept_idx: Vec<f64> = kept.iter().map(|b| b.index).collect();
     let kept_onset: Vec<f64> = kept.iter().map(|b| b.onset).collect();
@@ -275,22 +306,25 @@ fn analyze_band(
         periodicity,
     );
 
-    Some(Measurement {
-        rate_s_per_day,
-        rate_ci95_s_per_day,
-        beat_error_ms,
-        amplitude_deg,
-        bph: cfg.bph,
-        lift_angle_deg: cfg.lift_angle_deg,
-        beats_detected,
-        beats_used: kept.len(),
-        beats_expected,
-        periodicity,
-        detected_bph,
-        band_center_hz,
-        masked_s,
-        quality,
-    })
+    Some((
+        Measurement {
+            rate_s_per_day,
+            rate_ci95_s_per_day,
+            beat_error_ms,
+            amplitude_deg,
+            bph: cfg.bph,
+            lift_angle_deg: cfg.lift_angle_deg,
+            beats_detected,
+            beats_used: kept.len(),
+            beats_expected,
+            periodicity,
+            detected_bph,
+            band_center_hz,
+            masked_s,
+            quality,
+        },
+        dots,
+    ))
 }
 
 /// Estimate the dominant envelope periodicity (0–1) and the bph it implies,
@@ -746,6 +780,29 @@ mod tests {
             m.rate_s_per_day,
             m.rate_ci95_s_per_day
         );
+    }
+
+    #[test]
+    fn analyze_with_beats_returns_consistent_dots() {
+        let spec = SignalSpec {
+            duration_s: 10.0,
+            ..Default::default()
+        };
+        let sig = synth_escapement(&spec);
+        let cfg = AnalysisConfig::new(spec.bph, spec.lift_angle_deg);
+        let (m, dots) = analyze_with_beats(&sig.samples, sig.sample_rate, &cfg).expect("beats");
+        assert_eq!(dots.len(), m.beats_detected);
+        assert_eq!(dots.iter().filter(|d| d.kept).count(), m.beats_used);
+        // Onsets are sorted, within the clip, and roughly one nominal period
+        // apart on a clean signal.
+        let period = 3600.0 / f64::from(spec.bph);
+        for w in dots.windows(2) {
+            assert!(w[1].onset_s > w[0].onset_s);
+            let gap = w[1].onset_s - w[0].onset_s;
+            assert!((gap - period).abs() < 0.2 * period, "gap={gap}");
+        }
+        assert!(dots.first().unwrap().onset_s >= 0.0);
+        assert!(dots.last().unwrap().onset_s <= 10.0);
     }
 
     #[test]

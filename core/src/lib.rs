@@ -10,7 +10,7 @@ pub mod dsp;
 pub mod measure;
 pub mod synth;
 
-pub use measure::{analyze, AnalysisConfig, Measurement};
+pub use measure::{analyze, analyze_with_beats, AnalysisConfig, BeatDot, Measurement};
 
 /// Crate version, surfaced to the app for a health check.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

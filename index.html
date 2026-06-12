@@ -91,8 +91,35 @@
             >
               Analyze file…
             </button>
+            <button
+              id="live-toggle"
+              type="button"
+              class="ghost"
+              title="Continuous measurement with a scrolling trace (classic timegrapher)"
+            >
+              Live trace
+            </button>
           </div>
           <p id="status" class="status" aria-live="polite"></p>
+        </section>
+
+        <section id="live" class="panel result hidden">
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-value" id="live-rate">—</span>
+              <span class="metric-label">Rate</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="live-beaterror">—</span>
+              <span class="metric-label">Beat error</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="live-amplitude">—</span>
+              <span class="metric-label">Amplitude</span>
+            </div>
+          </div>
+          <canvas id="live-canvas" aria-label="Live beat trace"></canvas>
+          <p id="live-meta" class="note"></p>
         </section>
 
         <section id="result" class="panel result hidden">

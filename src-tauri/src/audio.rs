@@ -318,7 +318,7 @@ fn expected_beats(n_samples: usize, sample_rate: u32, bph: u32) -> usize {
 }
 
 /// Resolve a device by name, or the system default input.
-fn find_device(name: Option<&str>) -> Result<cpal::Device, String> {
+pub fn find_device(name: Option<&str>) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
     match name {
         Some(n) => host
@@ -338,16 +338,8 @@ fn record_samples(
     config: &cpal::SupportedStreamConfig,
     seconds: f64,
 ) -> Result<Vec<f32>, String> {
-    let channels = config.channels() as usize;
-    let stream_config: cpal::StreamConfig = config.config();
     let buf = Arc::new(Mutex::new(Vec::<f32>::new()));
-
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => build_stream::<f32>(device, &stream_config, channels, &buf)?,
-        cpal::SampleFormat::I16 => build_stream::<i16>(device, &stream_config, channels, &buf)?,
-        cpal::SampleFormat::U16 => build_stream::<u16>(device, &stream_config, channels, &buf)?,
-        other => return Err(format!("unsupported sample format: {other:?}")),
-    };
+    let stream = open_input_stream(device, config, &buf)?;
 
     stream
         .play()
@@ -357,6 +349,24 @@ fn record_samples(
 
     let samples = std::mem::take(&mut *buf.lock().expect("audio buffer lock"));
     Ok(samples)
+}
+
+/// Open an input stream that appends mono `f32` samples to `buf`, dispatching
+/// on the device's sample format. The stream starts on `play()`; note that
+/// `cpal::Stream` is not `Send`, so it must stay on the thread that built it.
+pub fn open_input_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    buf: &Arc<Mutex<Vec<f32>>>,
+) -> Result<cpal::Stream, String> {
+    let channels = config.channels() as usize;
+    let stream_config: cpal::StreamConfig = config.config();
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => build_stream::<f32>(device, &stream_config, channels, buf),
+        cpal::SampleFormat::I16 => build_stream::<i16>(device, &stream_config, channels, buf),
+        cpal::SampleFormat::U16 => build_stream::<u16>(device, &stream_config, channels, buf),
+        other => Err(format!("unsupported sample format: {other:?}")),
+    }
 }
 
 /// Build an input stream whose callback downmixes frames to mono `f32` and

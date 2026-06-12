@@ -121,6 +121,31 @@ export interface TestEdit {
   notes: string | null;
 }
 
+/** One beat streamed from the live session ("live-beats" event). */
+export interface LiveBeat {
+  /** Seconds since the session started. */
+  t_s: number;
+  /** Whether the rate fit kept this beat (false = noise dot). */
+  kept: boolean;
+}
+
+/** Rolling snapshot streamed from the live session ("live-metrics" event). */
+export interface LiveMetrics {
+  elapsed_s: number;
+  peak_level: number;
+  measured: boolean;
+  rate_s_per_day: number;
+  rate_ci95_s_per_day: number;
+  beat_error_ms: number;
+  amplitude_deg: number | null;
+  quality: number;
+  periodicity: number;
+  band_center_hz: number;
+  beats_used: number;
+  beats_expected: number;
+  warming_up: boolean;
+}
+
 export interface RecordArgs {
   deviceName: string | null;
   bph: number;
@@ -136,6 +161,9 @@ export const api = {
     invoke<MeasurementDto>("record_and_analyze", { ...args }),
   analyzeFile: (path: string, bph: number, liftAngleDeg: number) =>
     invoke<MeasurementDto>("analyze_file", { path, bph, liftAngleDeg }),
+  startLive: (deviceName: string | null, bph: number, liftAngleDeg: number) =>
+    invoke<void>("start_live", { deviceName, bph, liftAngleDeg }),
+  stopLive: () => invoke<void>("stop_live"),
 
   getSettings: () => invoke<Settings>("get_settings"),
   setDataDir: (path: string) => invoke<Settings>("set_data_dir", { path }),

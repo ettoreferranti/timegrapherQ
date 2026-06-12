@@ -1,8 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
   api,
   el,
+  type LiveBeat,
+  type LiveMetrics,
   type MeasurementDto,
   type Test,
   type Watch,
@@ -118,6 +121,8 @@ async function onRecord(): Promise<void> {
   const status = el<HTMLParagraphElement>("status");
   const seconds = Number(el<HTMLInputElement>("duration").value);
 
+  await stopLive(); // recording and live mode share the microphone
+
   button.disabled = true;
   status.textContent = `Recording for ${seconds.toFixed(0)} s — hold the microphone against the watch…`;
   try {
@@ -168,6 +173,144 @@ async function onAnalyzeFile(): Promise<void> {
     status.textContent = `✕ ${String(err)}`;
   } finally {
     button.disabled = false;
+  }
+}
+
+// ---------- live trace ----------
+
+/** Seconds of trace kept on screen. */
+const TRACE_SPAN_S = 30;
+
+let liveRunning = false;
+let liveUnlisteners: UnlistenFn[] = [];
+let liveBeats: LiveBeat[] = [];
+let liveBph = 28_800;
+
+async function onToggleLive(): Promise<void> {
+  if (liveRunning) {
+    await stopLive();
+    return;
+  }
+  const status = el<HTMLParagraphElement>("status");
+  liveBph = Number(el<HTMLSelectElement>("bph").value);
+  liveBeats = [];
+  try {
+    liveUnlisteners.push(
+      await listen<LiveBeat[]>("live-beats", (e) => {
+        liveBeats.push(...e.payload);
+        const newest = liveBeats[liveBeats.length - 1].t_s;
+        liveBeats = liveBeats.filter((b) => b.t_s >= newest - TRACE_SPAN_S - 5);
+        drawTrace();
+      }),
+    );
+    liveUnlisteners.push(
+      await listen<LiveMetrics>("live-metrics", (e) =>
+        updateLiveReadouts(e.payload),
+      ),
+    );
+    await api.startLive(
+      el<HTMLSelectElement>("device").value || null,
+      liveBph,
+      Number(el<HTMLInputElement>("lift").value),
+    );
+    liveRunning = true;
+    el<HTMLButtonElement>("live-toggle").textContent = "Stop live";
+    el("live").classList.remove("hidden");
+    el("live-meta").textContent = "Listening…";
+    status.textContent = "";
+    drawTrace();
+  } catch (err) {
+    await stopLive();
+    status.textContent = `✕ ${String(err)}`;
+  }
+}
+
+async function stopLive(): Promise<void> {
+  if (!liveRunning && liveUnlisteners.length === 0) return;
+  try {
+    await api.stopLive();
+  } catch {
+    // session may already be gone; nothing to do
+  }
+  for (const unlisten of liveUnlisteners) unlisten();
+  liveUnlisteners = [];
+  liveRunning = false;
+  el<HTMLButtonElement>("live-toggle").textContent = "Live trace";
+}
+
+function updateLiveReadouts(m: LiveMetrics): void {
+  el("live-rate").textContent = m.measured
+    ? `${formatRate(m.rate_s_per_day)} ±${m.rate_ci95_s_per_day.toFixed(1)}`
+    : "—";
+  el("live-beaterror").textContent = m.measured
+    ? formatBeatError(m.beat_error_ms)
+    : "—";
+  el("live-amplitude").textContent = m.measured
+    ? formatAmplitude(m.amplitude_deg)
+    : "—";
+
+  const parts: string[] = [];
+  if (m.warming_up) {
+    parts.push(`warming up… ${m.elapsed_s.toFixed(0)} s`);
+  } else if (!m.measured) {
+    parts.push("no steady tick — press the microphone against the watch");
+  } else {
+    parts.push(`confidence ${Math.round(m.quality * 100)}%`);
+    parts.push(`${m.beats_used}/${m.beats_expected} ticks`);
+    parts.push(`band ${(m.band_center_hz / 1000).toFixed(1)} kHz`);
+  }
+  parts.push(`input ${levelBar(m.peak_level)}`);
+  parts.push(`${m.elapsed_s.toFixed(0)} s`);
+  el("live-meta").textContent = parts.join(" · ");
+
+  el("live").classList.toggle(
+    "low-confidence",
+    !m.measured || m.quality < 0.6,
+  );
+}
+
+/** A small textual VU bar for the input level. */
+function levelBar(peak: number): string {
+  // Map typical tick peaks (0.001..0.5, logarithmic) onto 0..8 blocks.
+  const db = 20 * Math.log10(Math.max(peak, 1e-5));
+  const filled = Math.max(0, Math.min(8, Math.round((db + 80) / 7.5)));
+  return "▰".repeat(filled) + "▱".repeat(8 - filled);
+}
+
+function drawTrace(): void {
+  const canvas = el<HTMLCanvasElement>("live-canvas");
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 600;
+  const cssH = canvas.clientHeight || 240;
+  if (canvas.width !== Math.round(cssW * dpr)) {
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  // y wraps every two beats (one full oscillation), so tick and tock form two
+  // lines: slope = rate, vertical gap = beat error, off-line dots = noise.
+  const wrapS = (3600 / liveBph) * 2;
+  const newest = liveBeats.length
+    ? liveBeats[liveBeats.length - 1].t_s
+    : TRACE_SPAN_S;
+  const t0 = Math.max(0, newest - TRACE_SPAN_S);
+
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.beginPath();
+  ctx.moveTo(0, cssH / 2);
+  ctx.lineTo(cssW, cssH / 2);
+  ctx.stroke();
+
+  for (const b of liveBeats) {
+    if (b.t_s < t0) continue;
+    const x = ((b.t_s - t0) / TRACE_SPAN_S) * cssW;
+    const y = cssH - (((b.t_s % wrapS) / wrapS) * cssH);
+    ctx.fillStyle = b.kept ? "#4ea1ff" : "rgba(255, 110, 110, 0.7)";
+    ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
 }
 
@@ -504,6 +647,10 @@ window.addEventListener("DOMContentLoaded", () => {
   el<HTMLButtonElement>("analyze-file").addEventListener(
     "click",
     () => void onAnalyzeFile(),
+  );
+  el<HTMLButtonElement>("live-toggle").addEventListener(
+    "click",
+    () => void onToggleLive(),
   );
   el<HTMLButtonElement>("record").addEventListener(
     "click",

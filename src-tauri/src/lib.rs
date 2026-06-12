@@ -7,6 +7,7 @@
 mod audio;
 mod db;
 mod import;
+mod live;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -19,6 +20,8 @@ struct AppState {
     store: db::Store,
     settings: db::Settings,
     config_dir: std::path::PathBuf,
+    /// The running live session, if any.
+    live: Option<live::SessionHandle>,
 }
 
 type SharedState = Mutex<AppState>;
@@ -76,6 +79,38 @@ async fn analyze_file(
     tauri::async_runtime::spawn_blocking(move || import::analyze_file(&path, bph, lift_angle_deg))
         .await
         .map_err(|e| format!("analysis task failed: {e}"))?
+}
+
+/// Start live mode: continuous capture + analysis, streamed to the UI as
+/// `live-beats` / `live-metrics` events. Any previous session is stopped.
+#[tauri::command]
+async fn start_live(
+    app: tauri::AppHandle,
+    device_name: Option<String>,
+    bph: u32,
+    lift_angle_deg: f64,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    // Opening the device can block for a moment; keep it off the event loop.
+    let handle =
+        tauri::async_runtime::spawn_blocking(move || live::start(app, device_name, bph, lift_angle_deg))
+            .await
+            .map_err(|e| format!("live start failed: {e}"))??;
+    let mut st = lock(&state)?;
+    if let Some(prev) = st.live.take() {
+        prev.stop();
+    }
+    st.live = Some(handle);
+    Ok(())
+}
+
+/// Stop the live session, if one is running.
+#[tauri::command]
+fn stop_live(state: State<SharedState>) -> Result<(), String> {
+    if let Some(session) = lock(&state)?.live.take() {
+        session.stop();
+    }
+    Ok(())
 }
 
 // ---- Settings ----
@@ -177,6 +212,7 @@ pub fn run() {
                 store,
                 settings,
                 config_dir,
+                live: None,
             }));
             Ok(())
         })
@@ -185,6 +221,8 @@ pub fn run() {
             list_input_devices,
             record_and_analyze,
             analyze_file,
+            start_live,
+            stop_live,
             get_settings,
             set_data_dir,
             set_default_clip,

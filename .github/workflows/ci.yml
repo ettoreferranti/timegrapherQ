@@ -52,6 +52,7 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libayatana-appindicator3-dev \
+            libasound2-dev \
             patchelf \
             build-essential
       - uses: dtolnay/rust-toolchain@stable

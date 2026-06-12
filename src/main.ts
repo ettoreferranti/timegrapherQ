@@ -272,10 +272,7 @@ function updateLiveReadouts(m: LiveMetrics): void {
   parts.push(`${m.elapsed_s.toFixed(0)} s`);
   el("live-meta").textContent = parts.join(" · ");
 
-  el("live").classList.toggle(
-    "low-confidence",
-    !m.measured || m.quality < 0.6,
-  );
+  el("live").classList.toggle("low-confidence", !m.measured || m.quality < 0.6);
 }
 
 /** A small textual VU bar for the input level. */
@@ -317,7 +314,7 @@ function drawTrace(): void {
   for (const b of liveBeats) {
     if (b.t_s < t0) continue;
     const x = ((b.t_s - t0) / TRACE_SPAN_S) * cssW;
-    const y = cssH - (((b.t_s % wrapS) / wrapS) * cssH);
+    const y = cssH - ((b.t_s % wrapS) / wrapS) * cssH;
     ctx.fillStyle = b.kept ? "#4ea1ff" : "rgba(255, 110, 110, 0.7)";
     ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
   }

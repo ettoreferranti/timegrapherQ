@@ -123,7 +123,9 @@ pub fn start(
     {
         let stop = Arc::clone(&stop);
         let buf = Arc::clone(&buf);
-        std::thread::spawn(move || analysis_thread(app, buf, stop, sample_rate, bph, lift_angle_deg));
+        std::thread::spawn(move || {
+            analysis_thread(app, buf, stop, sample_rate, bph, lift_angle_deg)
+        });
     }
 
     Ok(SessionHandle { stop })

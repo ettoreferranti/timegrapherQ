@@ -16,18 +16,26 @@ const STANDARD_BPH: [u32; 7] = [12_000, 18_000, 19_800, 21_600, 25_200, 28_800, 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let path = args.get(1).expect("usage: analyze_wav <file.wav> [bph]");
-    let forced_bph: Option<u32> = args.get(2).map(|s| s.parse().expect("bph must be a number"));
+    let forced_bph: Option<u32> = args
+        .get(2)
+        .map(|s| s.parse().expect("bph must be a number"));
 
     let (samples, sample_rate) = read_wav_mono_16(path);
     let sr = f64::from(sample_rate);
     let duration = samples.len() as f64 / sr;
     let peak = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
-    let rms = (samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>()
+    let rms = (samples
+        .iter()
+        .map(|&s| f64::from(s) * f64::from(s))
+        .sum::<f64>()
         / samples.len().max(1) as f64)
         .sqrt();
 
     println!("file: {path}");
-    println!("{:.1} s @ {} Hz | peak {:.4} | rms {:.5}", duration, sample_rate, peak, rms);
+    println!(
+        "{:.1} s @ {} Hz | peak {:.4} | rms {:.5}",
+        duration, sample_rate, peak, rms
+    );
 
     // Per-band signal diagnostics with the same DSP front-end as the app,
     // computed on the outlier-suppressed signal that `analyze` measures.
@@ -41,12 +49,20 @@ fn main() {
         let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
         let reference = dsp::percentile(&env, cfg.reference_percentile);
         let threshold = cfg.threshold_ratio * reference;
-        let onsets =
-            dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s, cfg.onset_edge_fraction);
+        let onsets = dsp::detect_onsets(
+            &env,
+            sr,
+            threshold,
+            cfg.refractory_s,
+            cfg.onset_edge_fraction,
+        );
         let (periodicity, detected_bph) = measure::dominant_periodicity(&env, sr);
         println!(
             "band {:>5.0} Hz: {:>5} onsets | periodicity {:.2} | detected bph {:?}",
-            hz, onsets.len(), periodicity, detected_bph
+            hz,
+            onsets.len(),
+            periodicity,
+            detected_bph
         );
     }
     println!();
@@ -88,7 +104,10 @@ fn main() {
 /// input is downmixed to mono.
 fn read_wav_mono_16(path: &str) -> (Vec<f32>, u32) {
     let bytes = fs::read(path).expect("read wav file");
-    assert!(&bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE", "not a WAV file");
+    assert!(
+        &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
+        "not a WAV file"
+    );
 
     let mut pos = 12;
     let mut sample_rate = 0u32;

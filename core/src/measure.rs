@@ -874,7 +874,11 @@ mod tests {
             (0.3..=0.7).contains(&kept),
             "kept fraction {kept} should be about one segment"
         );
-        assert!(m.quality < 0.8, "quality={} should reflect lost coverage", m.quality);
+        assert!(
+            m.quality < 0.8,
+            "quality={} should reflect lost coverage",
+            m.quality
+        );
     }
 
     #[test]
@@ -907,7 +911,14 @@ mod tests {
         let xs: Vec<f64> = (0..50).map(f64::from).collect();
         let ys: Vec<f64> = xs
             .iter()
-            .map(|&x| 2.0 * x + if (x as u32).is_multiple_of(5) { 5.0 } else { 0.0 })
+            .map(|&x| {
+                2.0 * x
+                    + if (x as u32).is_multiple_of(5) {
+                        5.0
+                    } else {
+                        0.0
+                    }
+            })
             .collect();
         let (slope, _) = theil_sen(&xs, &ys).expect("fit");
         assert!((slope - 2.0).abs() < 0.01, "slope={slope}");

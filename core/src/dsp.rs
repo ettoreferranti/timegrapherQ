@@ -148,7 +148,11 @@ fn edge_time(
     }
     // env[k-1] < level <= env[k]: linear interpolation between the two samples.
     let (lo, hi) = (env[k - 1], env[k]);
-    let frac = if hi > lo { (level - lo) / (hi - lo) } else { 1.0 };
+    let frac = if hi > lo {
+        (level - lo) / (hi - lo)
+    } else {
+        1.0
+    };
     ((k - 1) as f64 + frac) / sample_rate
 }
 

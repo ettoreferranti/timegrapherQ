@@ -92,9 +92,7 @@ fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32), String> {
         let packet = match format.next_packet() {
             Ok(p) => p,
             // Normal end of stream (symphonia reports EOF as an IO error).
-            Err(SymphoniaError::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break
             }
             Err(SymphoniaError::ResetRequired) => break,
@@ -149,7 +147,11 @@ mod tests {
         let dto = analyze_file(&path, 28_800, 52.0).expect("analyse file");
         assert!(dto.measured, "expected a measurement");
         assert!(dto.quality > 0.8, "quality={}", dto.quality);
-        assert!(dto.rate_s_per_day.abs() < 1.0, "rate={}", dto.rate_s_per_day);
+        assert!(
+            dto.rate_s_per_day.abs() < 1.0,
+            "rate={}",
+            dto.rate_s_per_day
+        );
         assert!(dto.device_name.starts_with("file: "));
         assert!(dto.recording_path.is_some());
 

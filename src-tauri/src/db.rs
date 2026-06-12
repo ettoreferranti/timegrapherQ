@@ -210,7 +210,8 @@ impl Store {
         std::fs::create_dir_all(data_dir.join("recordings")).map_err(|e| e.to_string())?;
         let _ = std::fs::write(data_dir.join("README.txt"), DATA_DIR_README);
 
-        let conn = Connection::open(data_dir.join("timegrapherq.sqlite")).map_err(|e| e.to_string())?;
+        let conn =
+            Connection::open(data_dir.join("timegrapherq.sqlite")).map_err(|e| e.to_string())?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| e.to_string())?;
         migrate(&conn)?;

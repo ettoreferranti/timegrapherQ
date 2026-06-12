@@ -293,9 +293,14 @@ fn signal_stats(samples: &[f32], sample_rate: u32, cfg: &AnalysisConfig) -> Sign
         let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
         let reference = dsp::percentile(&env, cfg.reference_percentile);
         let threshold = cfg.threshold_ratio * reference;
-        let raw_onsets =
-            dsp::detect_onsets(&env, sr, threshold, cfg.refractory_s, cfg.onset_edge_fraction)
-                .len();
+        let raw_onsets = dsp::detect_onsets(
+            &env,
+            sr,
+            threshold,
+            cfg.refractory_s,
+            cfg.onset_edge_fraction,
+        )
+        .len();
         let (periodicity, detected_bph) =
             timegrapherq_core::measure::dominant_periodicity(&env, sr);
         if periodicity > best.periodicity {

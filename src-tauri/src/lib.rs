@@ -27,7 +27,9 @@ struct AppState {
 type SharedState = Mutex<AppState>;
 
 fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, AppState>, String> {
-    state.lock().map_err(|_| "application state is poisoned".to_string())
+    state
+        .lock()
+        .map_err(|_| "application state is poisoned".to_string())
 }
 
 #[derive(Serialize)]
@@ -92,10 +94,11 @@ async fn start_live(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     // Opening the device can block for a moment; keep it off the event loop.
-    let handle =
-        tauri::async_runtime::spawn_blocking(move || live::start(app, device_name, bph, lift_angle_deg))
-            .await
-            .map_err(|e| format!("live start failed: {e}"))??;
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        live::start(app, device_name, bph, lift_angle_deg)
+    })
+    .await
+    .map_err(|e| format!("live start failed: {e}"))??;
     let mut st = lock(&state)?;
     if let Some(prev) = st.live.take() {
         prev.stop();

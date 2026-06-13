@@ -38,6 +38,38 @@
             <p id="device-note" class="note"></p>
           </div>
 
+          <div class="field">
+            <label>Mic check</label>
+            <div class="row">
+              <button id="mic-check" type="button" class="ghost">
+                Mic check
+              </button>
+              <div class="meter" id="mic-meter">
+                <div class="meter-peak" id="mic-meter-peak"></div>
+                <div class="meter-cover" id="mic-meter-cover"></div>
+              </div>
+              <span class="meter-db" id="mic-db">—</span>
+            </div>
+            <div class="row hidden" id="mic-listen-row">
+              <label class="checkbox">
+                <input id="mic-listen" type="checkbox" />
+                Listen
+              </label>
+              <input
+                id="mic-gain"
+                type="range"
+                min="1"
+                max="100"
+                value="20"
+                title="Listen volume (gain)"
+              />
+            </div>
+            <p class="note">
+              Tap the contact mic — the bar should jump. No vibration means a
+              chain problem (jack, adapter, device selection).
+            </p>
+          </div>
+
           <div class="grid">
             <div class="field">
               <label for="bph">Beat rate (bph)</label>

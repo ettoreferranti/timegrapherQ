@@ -7,6 +7,7 @@ import {
   type LiveBeat,
   type LiveBeatsBatch,
   type LiveMetrics,
+  type MicLevel,
   type MeasurementDto,
   type Test,
   type Watch,
@@ -122,7 +123,9 @@ async function onRecord(): Promise<void> {
   const status = el<HTMLParagraphElement>("status");
   const seconds = Number(el<HTMLInputElement>("duration").value);
 
-  await stopLive(); // recording and live mode share the microphone
+  // Recording, live mode and the mic monitor all share the microphone.
+  await stopLive();
+  await stopMonitor();
 
   button.disabled = true;
   status.textContent = `Recording for ${seconds.toFixed(0)} s — hold the microphone against the watch…`;
@@ -177,6 +180,112 @@ async function onAnalyzeFile(): Promise<void> {
   }
 }
 
+// ---------- mic check ----------
+
+/** Bottom of the level meter (dBFS); faint watch ticks sit around −40 dB. */
+const METER_FLOOR_DB = -60;
+
+let monitorRunning = false;
+let monitorUnlisten: UnlistenFn | null = null;
+let monitorListen = false;
+/** Peak-hold level (dBFS) that decays between meter frames. */
+let peakHoldDb = METER_FLOOR_DB;
+
+async function onToggleMonitor(): Promise<void> {
+  if (monitorRunning) {
+    await stopMonitor();
+    return;
+  }
+  await stopLive(); // shared microphone
+  await startMonitor();
+}
+
+async function startMonitor(): Promise<void> {
+  const status = el<HTMLParagraphElement>("status");
+  try {
+    if (!monitorUnlisten) {
+      monitorUnlisten = await listen<MicLevel>("mic-level", (e) =>
+        drawMeter(e.payload),
+      );
+    }
+    await api.startMicMonitor(
+      el<HTMLSelectElement>("device").value || null,
+      monitorListen,
+      Number(el<HTMLInputElement>("mic-gain").value),
+    );
+    monitorRunning = true;
+    el<HTMLButtonElement>("mic-check").textContent = "Stop";
+    el("mic-listen-row").classList.remove("hidden");
+    status.textContent = "";
+  } catch (err) {
+    await stopMonitor();
+    status.textContent = `✕ ${String(err)}`;
+  }
+}
+
+async function stopMonitor(): Promise<void> {
+  if (monitorUnlisten) {
+    monitorUnlisten();
+    monitorUnlisten = null;
+  }
+  if (monitorRunning) {
+    try {
+      await api.stopMicMonitor();
+    } catch {
+      // already gone
+    }
+  }
+  monitorRunning = false;
+  el<HTMLButtonElement>("mic-check").textContent = "Mic check";
+  el("mic-listen-row").classList.add("hidden");
+  resetMeter();
+}
+
+/** Toggle audible passthrough; restart the running session to (de)activate it. */
+async function onListenToggle(): Promise<void> {
+  monitorListen = el<HTMLInputElement>("mic-listen").checked;
+  if (monitorRunning) {
+    // The backend stops the previous session when a new one starts.
+    await api.startMicMonitor(
+      el<HTMLSelectElement>("device").value || null,
+      monitorListen,
+      Number(el<HTMLInputElement>("mic-gain").value),
+    );
+  }
+}
+
+function onGainInput(): void {
+  if (monitorRunning && monitorListen) {
+    void api.setMonitorGain(Number(el<HTMLInputElement>("mic-gain").value));
+  }
+}
+
+function drawMeter(level: MicLevel): void {
+  const widthPct = dbToPct(level.db);
+  // Decay the peak-hold ~45 dB/s (1.5 dB per ~33 ms frame).
+  peakHoldDb = Math.max(level.db, peakHoldDb - 1.5);
+  el("mic-meter-cover").style.width = `${100 - widthPct}%`;
+  el("mic-meter-peak").style.left = `${dbToPct(peakHoldDb)}%`;
+  el("mic-db").textContent = level.clipping
+    ? "CLIP"
+    : `${Math.round(level.db)} dB`;
+  el("mic-meter").classList.toggle("clip", level.clipping);
+}
+
+/** Map a dBFS value onto 0–100% of the meter (floor..0 dB). */
+function dbToPct(db: number): number {
+  const pct = ((db - METER_FLOOR_DB) / -METER_FLOOR_DB) * 100;
+  return Math.max(0, Math.min(100, pct));
+}
+
+function resetMeter(): void {
+  peakHoldDb = METER_FLOOR_DB;
+  el("mic-meter-cover").style.width = "100%";
+  el("mic-meter-peak").style.left = "0%";
+  el("mic-db").textContent = "—";
+  el("mic-meter").classList.remove("clip");
+}
+
 // ---------- live trace ----------
 
 /** Seconds of trace kept on screen. */
@@ -192,6 +301,7 @@ async function onToggleLive(): Promise<void> {
     await stopLive();
     return;
   }
+  await stopMonitor(); // shared microphone
   const status = el<HTMLParagraphElement>("status");
   liveBph = Number(el<HTMLSelectElement>("bph").value);
   liveBeats = [];
@@ -657,6 +767,17 @@ window.addEventListener("DOMContentLoaded", () => {
   el<HTMLButtonElement>("live-toggle").addEventListener(
     "click",
     () => void onToggleLive(),
+  );
+  el<HTMLButtonElement>("mic-check").addEventListener(
+    "click",
+    () => void onToggleMonitor(),
+  );
+  el<HTMLInputElement>("mic-listen").addEventListener(
+    "change",
+    () => void onListenToggle(),
+  );
+  el<HTMLInputElement>("mic-gain").addEventListener("input", () =>
+    onGainInput(),
   );
   el<HTMLButtonElement>("record").addEventListener(
     "click",

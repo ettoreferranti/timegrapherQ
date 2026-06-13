@@ -153,6 +153,18 @@ export interface LiveMetrics {
   warming_up: boolean;
 }
 
+/** One input-level reading from the mic monitor ("mic-level" event). */
+export interface MicLevel {
+  /** Linear peak since the last emit (0–1, may exceed 1 on clipping). */
+  peak: number;
+  /** Linear RMS since the last emit. */
+  rms: number;
+  /** Peak in dBFS (≤ 0). */
+  db: number;
+  /** Whether the peak reached digital full scale. */
+  clipping: boolean;
+}
+
 export interface RecordArgs {
   deviceName: string | null;
   bph: number;
@@ -171,6 +183,10 @@ export const api = {
   startLive: (deviceName: string | null, bph: number, liftAngleDeg: number) =>
     invoke<void>("start_live", { deviceName, bph, liftAngleDeg }),
   stopLive: () => invoke<void>("stop_live"),
+  startMicMonitor: (deviceName: string | null, listen: boolean, gain: number) =>
+    invoke<void>("start_mic_monitor", { deviceName, listen, gain }),
+  stopMicMonitor: () => invoke<void>("stop_mic_monitor"),
+  setMonitorGain: (gain: number) => invoke<void>("set_monitor_gain", { gain }),
 
   getSettings: () => invoke<Settings>("get_settings"),
   setDataDir: (path: string) => invoke<Settings>("set_data_dir", { path }),

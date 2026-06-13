@@ -8,6 +8,7 @@ mod audio;
 mod db;
 mod import;
 mod live;
+mod monitor;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -22,6 +23,8 @@ struct AppState {
     config_dir: std::path::PathBuf,
     /// The running live session, if any.
     live: Option<live::SessionHandle>,
+    /// The running mic-monitor session, if any.
+    monitor: Option<monitor::MonitorHandle>,
 }
 
 type SharedState = Mutex<AppState>;
@@ -103,6 +106,10 @@ async fn start_live(
     if let Some(prev) = st.live.take() {
         prev.stop();
     }
+    // Live measurement and the mic monitor share the microphone.
+    if let Some(mon) = st.monitor.take() {
+        mon.stop();
+    }
     st.live = Some(handle);
     Ok(())
 }
@@ -112,6 +119,50 @@ async fn start_live(
 fn stop_live(state: State<SharedState>) -> Result<(), String> {
     if let Some(session) = lock(&state)?.live.take() {
         session.stop();
+    }
+    Ok(())
+}
+
+/// Start the mic monitor: a fast input-level meter, plus audible passthrough
+/// when `listen` is set. Any live session is stopped (shared microphone).
+#[tauri::command]
+async fn start_mic_monitor(
+    app: tauri::AppHandle,
+    device_name: Option<String>,
+    listen: bool,
+    gain: f64,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        monitor::start(app, device_name, listen, gain as f32)
+    })
+    .await
+    .map_err(|e| format!("mic monitor start failed: {e}"))??;
+    let mut st = lock(&state)?;
+    if let Some(prev) = st.monitor.take() {
+        prev.stop();
+    }
+    if let Some(live) = st.live.take() {
+        live.stop();
+    }
+    st.monitor = Some(handle);
+    Ok(())
+}
+
+/// Stop the mic monitor, if one is running.
+#[tauri::command]
+fn stop_mic_monitor(state: State<SharedState>) -> Result<(), String> {
+    if let Some(mon) = lock(&state)?.monitor.take() {
+        mon.stop();
+    }
+    Ok(())
+}
+
+/// Adjust the audible-passthrough gain of the running monitor (linear).
+#[tauri::command]
+fn set_monitor_gain(gain: f64, state: State<SharedState>) -> Result<(), String> {
+    if let Some(mon) = &lock(&state)?.monitor {
+        mon.set_gain(gain as f32);
     }
     Ok(())
 }
@@ -216,6 +267,7 @@ pub fn run() {
                 settings,
                 config_dir,
                 live: None,
+                monitor: None,
             }));
             Ok(())
         })
@@ -226,6 +278,9 @@ pub fn run() {
             analyze_file,
             start_live,
             stop_live,
+            start_mic_monitor,
+            stop_mic_monitor,
+            set_monitor_gain,
             get_settings,
             set_data_dir,
             set_default_clip,

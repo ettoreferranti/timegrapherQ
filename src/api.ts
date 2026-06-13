@@ -153,6 +153,12 @@ export interface LiveMetrics {
   warming_up: boolean;
 }
 
+/** One-time spectrogram description ("mic-spectrum-config" event). */
+export interface SpectrumConfig {
+  /** Filterbank band centre frequencies (Hz), low to high. */
+  centers_hz: number[];
+}
+
 /** One input-level reading from the mic monitor ("mic-level" event). */
 export interface MicLevel {
   /** Linear peak since the last emit (0–1, may exceed 1 on clipping). */
@@ -183,10 +189,15 @@ export const api = {
   startLive: (deviceName: string | null, bph: number, liftAngleDeg: number) =>
     invoke<void>("start_live", { deviceName, bph, liftAngleDeg }),
   stopLive: () => invoke<void>("stop_live"),
-  startMicMonitor: (deviceName: string | null, listen: boolean, gain: number) =>
-    invoke<void>("start_mic_monitor", { deviceName, listen, gain }),
+  startMicMonitor: (
+    deviceName: string | null,
+    listen: boolean,
+    gain: number,
+    isoHz: number,
+  ) => invoke<void>("start_mic_monitor", { deviceName, listen, gain, isoHz }),
   stopMicMonitor: () => invoke<void>("stop_mic_monitor"),
   setMonitorGain: (gain: number) => invoke<void>("set_monitor_gain", { gain }),
+  setMonitorIso: (isoHz: number) => invoke<void>("set_monitor_iso", { isoHz }),
 
   getSettings: () => invoke<Settings>("get_settings"),
   setDataDir: (path: string) => invoke<Settings>("set_data_dir", { path }),

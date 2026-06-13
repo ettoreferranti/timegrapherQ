@@ -1,16 +1,23 @@
-//! Mic monitor (hardware bring-up aid): a fast input-level meter plus an
-//! optional audible passthrough, independent of the measurement pipeline.
+//! Mic monitor (hardware bring-up aid): a fast input-level meter, a scrolling
+//! spectrogram, optional audible passthrough, and optional band-isolation —
+//! all independent of the measurement pipeline.
 //!
-//! One thread owns the cpal input stream (its callback accumulates peak/RMS
-//! into shared meter state and, when listening, pushes mono samples to a
-//! bounded ring buffer) and, when listening, an output stream that drains the
-//! ring with a live gain and zero-order (sample-and-hold) resampling. The same
-//! thread parks in an emit loop, sending a `mic-level` event ~30×/s.
+//! A watch tick is a faint, narrow-band transient buried in broadband mic
+//! noise, so a single broadband meter can't show it. The monitor therefore
+//! also runs a constant-Q **filterbank** (a bank of the core's band-pass
+//! biquads) to produce a spectrogram column each frame — a ticking watch
+//! appears as periodic vertical streaks at its band — and an optional
+//! **isolation** band-pass that feeds the meter and the audible passthrough so
+//! the tick stands out from the noise.
 //!
-//! This is deliberately separate from [`crate::live`]: it answers "is the mic
-//! alive, and where's the best clip position?" with the lowest possible latency
-//! and no analysis. Only one capture activity runs at a time (the commands stop
-//! the live session and vice versa).
+//! Architecture: the capture callback just appends raw mono samples to a
+//! buffer (kept light). A ~40 Hz processing thread drains the buffer, runs the
+//! filterbank and isolation filter (whose biquad state persists across
+//! frames), updates the meter, feeds the passthrough ring, and emits events:
+//!
+//! - `mic-spectrum-config` (once): the filterbank band centres, for axis labels;
+//! - `mic-spectrum`: a column of per-band levels (dBFS);
+//! - `mic-level`: the peak/RMS meter (of the isolated signal when isolating).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -23,10 +30,22 @@ use cpal::{FromSample, SizedSample};
 use serde::Serialize;
 use tauri::Emitter;
 
-use crate::audio::find_device;
+use timegrapherq_core::dsp::Biquad;
 
-/// Level-meter emission cadence (~30 Hz).
-const EMIT: Duration = Duration::from_millis(33);
+use crate::audio::{find_device, open_input_stream};
+
+/// Processing/emission cadence (~40 Hz): smooth spectrogram and passthrough.
+const FRAME: Duration = Duration::from_millis(25);
+/// Number of constant-Q filterbank bands (spectrogram rows).
+const BANDS: usize = 48;
+/// Lowest filterbank centre (Hz).
+const BAND_LO_HZ: f64 = 300.0;
+/// Highest filterbank centre as a fraction of the sample rate (below Nyquist).
+const BAND_HI_FRAC: f64 = 0.45;
+/// Hard cap on the highest band (Hz); ticks live well below this.
+const BAND_HI_MAX_HZ: f64 = 20_000.0;
+/// Q of the isolation band-pass (moderately narrow to reject neighbouring noise).
+const ISO_Q: f64 = 6.0;
 /// Cap on the passthrough buffer (seconds), bounding monitoring latency.
 const MAX_LATENCY_S: f64 = 0.15;
 
@@ -34,6 +53,7 @@ const MAX_LATENCY_S: f64 = 0.15;
 pub struct MonitorHandle {
     stop: Arc<AtomicBool>,
     gain: Arc<AtomicU32>,
+    iso_hz: Arc<AtomicU32>,
 }
 
 impl MonitorHandle {
@@ -45,29 +65,10 @@ impl MonitorHandle {
     pub fn set_gain(&self, gain: f32) {
         self.gain.store(gain.to_bits(), Ordering::Relaxed);
     }
-}
 
-/// Peak/RMS accumulated since the last meter emission.
-#[derive(Default)]
-struct Meter {
-    peak: f32,
-    sumsq: f64,
-    count: u64,
-}
-
-impl Meter {
-    fn snapshot(&self) -> MicLevel {
-        let rms = if self.count > 0 {
-            (self.sumsq / self.count as f64).sqrt() as f32
-        } else {
-            0.0
-        };
-        MicLevel {
-            peak: self.peak,
-            rms,
-            db: 20.0 * self.peak.max(1e-6).log10(),
-            clipping: self.peak >= 0.99,
-        }
+    /// Set the isolation band-pass centre (Hz); 0 disables isolation.
+    pub fn set_iso_hz(&self, hz: f32) {
+        self.iso_hz.store(hz.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -84,40 +85,53 @@ pub struct MicLevel {
     pub clipping: bool,
 }
 
+/// One-time spectrogram description (`mic-spectrum-config` event).
+#[derive(Debug, Clone, Serialize)]
+pub struct SpectrumConfig {
+    /// Filterbank band centre frequencies (Hz), low to high.
+    pub centers_hz: Vec<f32>,
+}
+
 /// Start a monitor session on `device_name` (or the default input). When
-/// `listen` is set, the input is also played to the default output device at
-/// `gain`. Returns once capture has started (or with the startup error).
+/// `listen` is set, the (optionally isolated) signal is played to the default
+/// output device at `gain`. `iso_hz` > 0 isolates that band; 0 is broadband.
 pub fn start(
     app: tauri::AppHandle,
     device_name: Option<String>,
     listen: bool,
     gain: f32,
+    iso_hz: f32,
 ) -> Result<MonitorHandle, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let gain = Arc::new(AtomicU32::new(gain.to_bits()));
+    let iso_hz = Arc::new(AtomicU32::new(iso_hz.to_bits()));
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     {
         let stop = Arc::clone(&stop);
         let gain = Arc::clone(&gain);
-        std::thread::spawn(move || monitor_thread(app, device_name, listen, stop, gain, tx));
+        let iso = Arc::clone(&iso_hz);
+        std::thread::spawn(move || {
+            monitor_thread(app, device_name, listen, stop, gain, iso, tx);
+        });
     }
 
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| "mic monitor did not start in time".to_string())??;
-    Ok(MonitorHandle { stop, gain })
+    Ok(MonitorHandle { stop, gain, iso_hz })
 }
 
-/// Owns the input (and optional output) stream and runs the emit loop.
+/// Owns the streams, runs the filterbank/isolation, and emits events.
 fn monitor_thread(
     app: tauri::AppHandle,
     device_name: Option<String>,
     listen: bool,
     stop: Arc<AtomicBool>,
     gain: Arc<AtomicU32>,
+    iso_hz: Arc<AtomicU32>,
     tx: Sender<Result<(), String>>,
 ) {
-    let meter = Arc::new(Mutex::new(Meter::default()));
+    let raw: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     let setup = (|| {
@@ -125,24 +139,17 @@ fn monitor_thread(
         let config = device
             .default_input_config()
             .map_err(|e| format!("could not read device config: {e}"))?;
-        let in_sr = config.sample_rate().0;
-        let ring_cap = (MAX_LATENCY_S * f64::from(in_sr)) as usize;
+        let sr = f64::from(config.sample_rate().0);
 
-        let input = build_input(
-            &device,
-            &config,
-            &meter,
-            listen.then(|| Arc::clone(&ring)),
-            ring_cap,
-        )?;
+        let input = open_input_stream(&device, &config, &raw)?;
         input
             .play()
             .map_err(|e| format!("failed to start capture: {e}"))?;
 
-        // Audible passthrough is best-effort: if no output device is available
-        // the meter still works, so we warn rather than fail the session.
+        // Audible passthrough is best-effort: the meter and spectrogram still
+        // work without an output device.
         let output = if listen {
-            match open_output(in_sr, &ring, &gain) {
+            match open_output(config.sample_rate().0, &ring, &gain) {
                 Ok(o) => Some(o),
                 Err(e) => {
                     eprintln!("mic monitor: audible passthrough unavailable: {e}");
@@ -152,96 +159,110 @@ fn monitor_thread(
         } else {
             None
         };
-        Ok::<_, String>((input, output))
+        Ok::<_, String>((input, output, sr))
     })();
 
-    match setup {
-        Ok((_input, _output)) => {
-            let _ = tx.send(Ok(()));
-            while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(EMIT);
-                let level = {
-                    let mut m = meter.lock().expect("meter lock");
-                    let level = m.snapshot();
-                    *m = Meter::default();
-                    level
-                };
-                let _ = app.emit("mic-level", level);
-            }
-            // `_input` / `_output` dropped here, stopping the streams.
-        }
+    let (_input, _output, sr) = match setup {
+        Ok(v) => v,
         Err(e) => {
             stop.store(true, Ordering::Relaxed);
             let _ = tx.send(Err(e));
+            return;
         }
-    }
-}
+    };
+    let _ = tx.send(Ok(()));
 
-/// Build the input stream, dispatching on sample format.
-fn build_input(
-    device: &cpal::Device,
-    config: &cpal::SupportedStreamConfig,
-    meter: &Arc<Mutex<Meter>>,
-    ring: Option<Arc<Mutex<VecDeque<f32>>>>,
-    ring_cap: usize,
-) -> Result<cpal::Stream, String> {
-    let channels = config.channels() as usize;
-    let cfg: cpal::StreamConfig = config.config();
-    match config.sample_format() {
-        cpal::SampleFormat::F32 => {
-            build_input_t::<f32>(device, &cfg, channels, meter, ring, ring_cap)
-        }
-        cpal::SampleFormat::I16 => {
-            build_input_t::<i16>(device, &cfg, channels, meter, ring, ring_cap)
-        }
-        cpal::SampleFormat::U16 => {
-            build_input_t::<u16>(device, &cfg, channels, meter, ring, ring_cap)
-        }
-        other => Err(format!("unsupported sample format: {other:?}")),
-    }
-}
+    let (centers, mut bank) = build_filterbank(sr);
+    let _ = app.emit(
+        "mic-spectrum-config",
+        SpectrumConfig {
+            centers_hz: centers.iter().map(|&c| c as f32).collect(),
+        },
+    );
+    let ring_cap = (MAX_LATENCY_S * sr) as usize;
 
-/// Input callback: downmix to mono, update the meter, and (when listening)
-/// feed the bounded passthrough ring buffer.
-fn build_input_t<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    channels: usize,
-    meter: &Arc<Mutex<Meter>>,
-    ring: Option<Arc<Mutex<VecDeque<f32>>>>,
-    ring_cap: usize,
-) -> Result<cpal::Stream, String>
-where
-    T: SizedSample + Send + 'static,
-    f32: FromSample<T>,
-{
-    let meter = Arc::clone(meter);
-    device
-        .build_input_stream(
-            config,
-            move |data: &[T], _: &cpal::InputCallbackInfo| {
-                let mut m = meter.lock().expect("meter lock");
-                let mut r = ring.as_ref().map(|r| r.lock().expect("ring lock"));
-                for frame in data.chunks(channels) {
-                    let s: f32 =
-                        frame.iter().map(|&x| f32::from_sample_(x)).sum::<f32>() / channels as f32;
-                    m.peak = m.peak.max(s.abs());
-                    m.sumsq += f64::from(s) * f64::from(s);
-                    m.count += 1;
-                    if let Some(q) = r.as_mut() {
-                        q.push_back(s);
-                    }
-                }
-                if let Some(q) = r.as_mut() {
-                    while q.len() > ring_cap {
-                        q.pop_front();
-                    }
-                }
+    let mut iso: Option<(f64, Biquad)> = None; // (centre, filter) when isolating
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(FRAME);
+        let chunk = std::mem::take(&mut *raw.lock().expect("raw buffer lock"));
+        if chunk.is_empty() {
+            continue;
+        }
+
+        // (Re)build the isolation filter when the requested centre changes.
+        let target = f32::from_bits(iso_hz.load(Ordering::Relaxed)) as f64;
+        if target > 0.0 {
+            if iso.as_ref().map(|(c, _)| *c) != Some(target) {
+                iso = Some((target, Biquad::bandpass(target, ISO_Q, sr)));
+            }
+        } else {
+            iso = None;
+        }
+
+        // Spectrogram: energy per band over this frame.
+        let mut column = vec![0f32; BANDS];
+        for (b, bq) in bank.iter_mut().enumerate() {
+            let mut sumsq = 0.0;
+            for &s in &chunk {
+                let y = bq.process(f64::from(s));
+                sumsq += y * y;
+            }
+            let meansq = sumsq / chunk.len() as f64;
+            column[b] = (10.0 * (meansq + 1e-12).log10()) as f32;
+        }
+        let _ = app.emit("mic-spectrum", &column);
+
+        // Meter and passthrough operate on the isolated signal when isolating.
+        let mut peak = 0.0f32;
+        let mut sumsq = 0.0f64;
+        let mut filtered = listen.then(|| Vec::with_capacity(chunk.len()));
+        for &s in &chunk {
+            let v = match iso.as_mut() {
+                Some((_, bq)) => bq.process(f64::from(s)) as f32,
+                None => s,
+            };
+            peak = peak.max(v.abs());
+            sumsq += f64::from(v) * f64::from(v);
+            if let Some(out) = filtered.as_mut() {
+                out.push(v);
+            }
+        }
+        let rms = (sumsq / chunk.len() as f64).sqrt() as f32;
+        let _ = app.emit(
+            "mic-level",
+            MicLevel {
+                peak,
+                rms,
+                db: 20.0 * peak.max(1e-6).log10(),
+                clipping: peak >= 0.99,
             },
-            |e| eprintln!("mic monitor input error: {e}"),
-            None,
-        )
-        .map_err(|e| format!("failed to open input stream: {e}"))
+        );
+
+        if let Some(samples) = filtered {
+            let mut q = ring.lock().expect("ring lock");
+            q.extend(samples);
+            while q.len() > ring_cap {
+                q.pop_front();
+            }
+        }
+    }
+}
+
+/// Build a constant-Q band-pass filterbank: log-spaced centres from
+/// [`BAND_LO_HZ`] up to `min(BAND_HI_MAX_HZ, BAND_HI_FRAC * sr)`, with Q set so
+/// adjacent bands roughly tile. Returns the centres and the biquads.
+fn build_filterbank(sr: f64) -> (Vec<f64>, Vec<Biquad>) {
+    let hi = (BAND_HI_FRAC * sr).clamp(BAND_LO_HZ * 2.0, BAND_HI_MAX_HZ);
+    let ratio = (hi / BAND_LO_HZ).powf(1.0 / (BANDS - 1) as f64);
+    let q = (1.0 / (ratio - 1.0)).max(1.0);
+    let mut centers = Vec::with_capacity(BANDS);
+    let mut bank = Vec::with_capacity(BANDS);
+    for i in 0..BANDS {
+        let c = BAND_LO_HZ * ratio.powi(i as i32);
+        centers.push(c);
+        bank.push(Biquad::bandpass(c, q, sr));
+    }
+    (centers, bank)
 }
 
 /// Open the default output device and play back the ring buffer with gain.

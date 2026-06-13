@@ -8,6 +8,7 @@ import {
   type LiveBeatsBatch,
   type LiveMetrics,
   type MicLevel,
+  type SpectrumConfig,
   type MeasurementDto,
   type Test,
   type Watch,
@@ -184,12 +185,28 @@ async function onAnalyzeFile(): Promise<void> {
 
 /** Bottom of the level meter (dBFS); faint watch ticks sit around −40 dB. */
 const METER_FLOOR_DB = -60;
+/** dBFS range mapped onto the spectrogram colour ramp. */
+const SPECTRO_FLOOR_DB = -90;
+const SPECTRO_CEIL_DB = -25;
 
 let monitorRunning = false;
-let monitorUnlisten: UnlistenFn | null = null;
+let monitorUnlisten: UnlistenFn[] = [];
 let monitorListen = false;
+/** Isolation band-pass centre (Hz); 0 = broadband. */
+let monitorIsoHz = 0;
+/** Filterbank band centres from the backend, for the y-axis and click mapping. */
+let spectroCenters: number[] = [];
+/** The most recent spectrogram column, for auto-picking the loudest band. */
+let lastColumn: number[] = [];
 /** Peak-hold level (dBFS) that decays between meter frames. */
 let peakHoldDb = METER_FLOOR_DB;
+
+function deviceValue(): string | null {
+  return el<HTMLSelectElement>("device").value || null;
+}
+function gainValue(): number {
+  return Number(el<HTMLInputElement>("mic-gain").value);
+}
 
 async function onToggleMonitor(): Promise<void> {
   if (monitorRunning) {
@@ -203,19 +220,33 @@ async function onToggleMonitor(): Promise<void> {
 async function startMonitor(): Promise<void> {
   const status = el<HTMLParagraphElement>("status");
   try {
-    if (!monitorUnlisten) {
-      monitorUnlisten = await listen<MicLevel>("mic-level", (e) =>
-        drawMeter(e.payload),
+    if (monitorUnlisten.length === 0) {
+      monitorUnlisten.push(
+        await listen<MicLevel>("mic-level", (e) => drawMeter(e.payload)),
+      );
+      monitorUnlisten.push(
+        await listen<SpectrumConfig>("mic-spectrum-config", (e) => {
+          spectroCenters = e.payload.centers_hz;
+          setupSpectroLabels();
+          updateIsoMarker();
+        }),
+      );
+      monitorUnlisten.push(
+        await listen<number[]>("mic-spectrum", (e) =>
+          drawSpectroColumn(e.payload),
+        ),
       );
     }
     await api.startMicMonitor(
-      el<HTMLSelectElement>("device").value || null,
+      deviceValue(),
       monitorListen,
-      Number(el<HTMLInputElement>("mic-gain").value),
+      gainValue(),
+      monitorIsoHz,
     );
     monitorRunning = true;
     el<HTMLButtonElement>("mic-check").textContent = "Stop";
-    el("mic-listen-row").classList.remove("hidden");
+    el("mic-monitor-extra").classList.remove("hidden");
+    resizeSpectro();
     status.textContent = "";
   } catch (err) {
     await stopMonitor();
@@ -224,10 +255,8 @@ async function startMonitor(): Promise<void> {
 }
 
 async function stopMonitor(): Promise<void> {
-  if (monitorUnlisten) {
-    monitorUnlisten();
-    monitorUnlisten = null;
-  }
+  for (const unlisten of monitorUnlisten) unlisten();
+  monitorUnlisten = [];
   if (monitorRunning) {
     try {
       await api.stopMicMonitor();
@@ -237,8 +266,9 @@ async function stopMonitor(): Promise<void> {
   }
   monitorRunning = false;
   el<HTMLButtonElement>("mic-check").textContent = "Mic check";
-  el("mic-listen-row").classList.add("hidden");
+  el("mic-monitor-extra").classList.add("hidden");
   resetMeter();
+  clearSpectro();
 }
 
 /** Toggle audible passthrough; restart the running session to (de)activate it. */
@@ -247,16 +277,92 @@ async function onListenToggle(): Promise<void> {
   if (monitorRunning) {
     // The backend stops the previous session when a new one starts.
     await api.startMicMonitor(
-      el<HTMLSelectElement>("device").value || null,
+      deviceValue(),
       monitorListen,
-      Number(el<HTMLInputElement>("mic-gain").value),
+      gainValue(),
+      monitorIsoHz,
     );
   }
 }
 
 function onGainInput(): void {
   if (monitorRunning && monitorListen) {
-    void api.setMonitorGain(Number(el<HTMLInputElement>("mic-gain").value));
+    void api.setMonitorGain(gainValue());
+  }
+}
+
+/** Toggle band-isolation; default to the loudest current band if none chosen. */
+function onIsolateToggle(): void {
+  const on = el<HTMLInputElement>("mic-isolate").checked;
+  monitorIsoHz = on ? monitorIsoHz || loudestBandHz() : 0;
+  applyIso();
+}
+
+/** Click the spectrogram to isolate the band under the cursor. */
+function onSpectroClick(ev: MouseEvent): void {
+  if (spectroCenters.length === 0) return;
+  const rect = el<HTMLCanvasElement>("mic-spectro").getBoundingClientRect();
+  const yFrac = (ev.clientY - rect.top) / rect.height; // 0 top … 1 bottom
+  const idx = Math.round((1 - yFrac) * (spectroCenters.length - 1));
+  monitorIsoHz = spectroCenters[clampIndex(idx)];
+  el<HTMLInputElement>("mic-isolate").checked = true;
+  applyIso();
+}
+
+function applyIso(): void {
+  updateIsoReadout();
+  updateIsoMarker();
+  if (monitorRunning) void api.setMonitorIso(monitorIsoHz);
+}
+
+function clampIndex(i: number): number {
+  return Math.max(0, Math.min(spectroCenters.length - 1, i));
+}
+
+function loudestBandHz(): number {
+  if (lastColumn.length === 0 || spectroCenters.length === 0) return 4000;
+  let best = 0;
+  for (let b = 1; b < lastColumn.length; b++) {
+    if (lastColumn[b] > lastColumn[best]) best = b;
+  }
+  return spectroCenters[clampIndex(best)];
+}
+
+function updateIsoReadout(): void {
+  el("mic-iso-hz").textContent =
+    monitorIsoHz > 0 ? `${(monitorIsoHz / 1000).toFixed(1)} kHz` : "off";
+}
+
+/** Fraction (0 bottom … 1 top) of the spectrogram height for a frequency. */
+function freqFrac(hz: number): number {
+  const lo = spectroCenters[0];
+  const hi = spectroCenters[spectroCenters.length - 1];
+  if (!(lo > 0) || hi <= lo) return 0;
+  return Math.log(hz / lo) / Math.log(hi / lo);
+}
+
+function updateIsoMarker(): void {
+  const marker = el("mic-iso-marker");
+  if (monitorIsoHz > 0 && spectroCenters.length > 0) {
+    marker.style.top = `${(1 - freqFrac(monitorIsoHz)) * 100}%`;
+    marker.classList.remove("hidden");
+  } else {
+    marker.classList.add("hidden");
+  }
+}
+
+function setupSpectroLabels(): void {
+  const box = el("mic-spectro-labels");
+  box.innerHTML = "";
+  if (spectroCenters.length === 0) return;
+  const lo = spectroCenters[0];
+  const hi = spectroCenters[spectroCenters.length - 1];
+  for (const hz of [500, 1000, 2000, 5000, 10000, 15000]) {
+    if (hz < lo || hz > hi) continue;
+    const span = document.createElement("span");
+    span.style.top = `${(1 - freqFrac(hz)) * 100}%`;
+    span.textContent = hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
+    box.appendChild(span);
   }
 }
 
@@ -284,6 +390,82 @@ function resetMeter(): void {
   el("mic-meter-peak").style.left = "0%";
   el("mic-db").textContent = "—";
   el("mic-meter").classList.remove("clip");
+}
+
+// --- spectrogram ---
+
+/** Size the canvas backing store to its CSS box (device pixels) and clear it. */
+function resizeSpectro(): void {
+  const c = el<HTMLCanvasElement>("mic-spectro");
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round((c.clientWidth || 600) * dpr);
+  const h = Math.round((c.clientHeight || 160) * dpr);
+  if (c.width !== w || c.height !== h) {
+    c.width = w;
+    c.height = h;
+  }
+  clearSpectro();
+}
+
+function clearSpectro(): void {
+  lastColumn = [];
+  const c = el<HTMLCanvasElement>("mic-spectro");
+  const ctx = c.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = "#05070a";
+  ctx.fillRect(0, 0, c.width, c.height);
+}
+
+/** Scroll the spectrogram left and paint the newest column on the right. */
+function drawSpectroColumn(col: number[]): void {
+  lastColumn = col;
+  const c = el<HTMLCanvasElement>("mic-spectro");
+  const ctx = c.getContext("2d");
+  if (!ctx || col.length === 0) return;
+  const w = c.width;
+  const h = c.height;
+  const dpr = window.devicePixelRatio || 1;
+  const colW = Math.max(1, Math.round(2 * dpr));
+
+  // Shift the existing image left by one column width.
+  ctx.drawImage(c, colW, 0, w - colW, h, 0, 0, w - colW, h);
+
+  const x = w - colW;
+  const n = col.length;
+  for (let b = 0; b < n; b++) {
+    const t =
+      (col[b] - SPECTRO_FLOOR_DB) / (SPECTRO_CEIL_DB - SPECTRO_FLOOR_DB);
+    const [r, g, bl] = heat(t);
+    ctx.fillStyle = `rgb(${r},${g},${bl})`;
+    const y0 = Math.round(h - ((b + 1) / n) * h);
+    const y1 = Math.round(h - (b / n) * h);
+    ctx.fillRect(x, y0, colW, Math.max(1, y1 - y0));
+  }
+}
+
+/** Colour ramp (black → blue → green → yellow → red) for a 0–1 intensity. */
+function heat(t: number): [number, number, number] {
+  const stops: [number, [number, number, number]][] = [
+    [0.0, [5, 7, 10]],
+    [0.4, [11, 61, 145]],
+    [0.7, [43, 191, 106]],
+    [0.9, [245, 208, 32]],
+    [1.0, [255, 59, 59]],
+  ];
+  const x = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < stops.length; i++) {
+    if (x <= stops[i][0]) {
+      const [t0, c0] = stops[i - 1];
+      const [t1, c1] = stops[i];
+      const f = (x - t0) / (t1 - t0);
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * f),
+        Math.round(c0[1] + (c1[1] - c0[1]) * f),
+        Math.round(c0[2] + (c1[2] - c0[2]) * f),
+      ];
+    }
+  }
+  return stops[stops.length - 1][1];
 }
 
 // ---------- live trace ----------
@@ -778,6 +960,12 @@ window.addEventListener("DOMContentLoaded", () => {
   );
   el<HTMLInputElement>("mic-gain").addEventListener("input", () =>
     onGainInput(),
+  );
+  el<HTMLInputElement>("mic-isolate").addEventListener("change", () =>
+    onIsolateToggle(),
+  );
+  el<HTMLCanvasElement>("mic-spectro").addEventListener("click", (ev) =>
+    onSpectroClick(ev),
   );
   el<HTMLButtonElement>("record").addEventListener(
     "click",

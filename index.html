@@ -50,23 +50,38 @@
               </div>
               <span class="meter-db" id="mic-db">—</span>
             </div>
-            <div class="row hidden" id="mic-listen-row">
-              <label class="checkbox">
-                <input id="mic-listen" type="checkbox" />
-                Listen
-              </label>
-              <input
-                id="mic-gain"
-                type="range"
-                min="1"
-                max="100"
-                value="20"
-                title="Listen volume (gain)"
-              />
+            <div class="hidden" id="mic-monitor-extra">
+              <div class="spectro-wrap" id="mic-spectro-wrap">
+                <canvas
+                  id="mic-spectro"
+                  title="Live spectrogram — click a band to isolate it"
+                ></canvas>
+                <div id="mic-iso-marker" class="iso-marker hidden"></div>
+                <div id="mic-spectro-labels" class="spectro-labels"></div>
+              </div>
+              <div class="row">
+                <label class="checkbox">
+                  <input id="mic-isolate" type="checkbox" />
+                  Isolate band
+                </label>
+                <span id="mic-iso-hz" class="meter-db">off</span>
+                <label class="checkbox">
+                  <input id="mic-listen" type="checkbox" />
+                  Listen
+                </label>
+                <input
+                  id="mic-gain"
+                  type="range"
+                  min="1"
+                  max="100"
+                  value="20"
+                  title="Listen volume (gain)"
+                />
+              </div>
             </div>
             <p class="note">
-              Tap the contact mic — the bar should jump. No vibration means a
-              chain problem (jack, adapter, device selection).
+              Tap the contact mic — the bar should jump. A ticking watch shows
+              as periodic vertical streaks; click that band to isolate it.
             </p>
           </div>
 

@@ -131,10 +131,11 @@ async fn start_mic_monitor(
     device_name: Option<String>,
     listen: bool,
     gain: f64,
+    iso_hz: f64,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        monitor::start(app, device_name, listen, gain as f32)
+        monitor::start(app, device_name, listen, gain as f32, iso_hz as f32)
     })
     .await
     .map_err(|e| format!("mic monitor start failed: {e}"))??;
@@ -163,6 +164,15 @@ fn stop_mic_monitor(state: State<SharedState>) -> Result<(), String> {
 fn set_monitor_gain(gain: f64, state: State<SharedState>) -> Result<(), String> {
     if let Some(mon) = &lock(&state)?.monitor {
         mon.set_gain(gain as f32);
+    }
+    Ok(())
+}
+
+/// Set the running monitor's isolation band-pass centre (Hz); 0 = broadband.
+#[tauri::command]
+fn set_monitor_iso(iso_hz: f64, state: State<SharedState>) -> Result<(), String> {
+    if let Some(mon) = &lock(&state)?.monitor {
+        mon.set_iso_hz(iso_hz as f32);
     }
     Ok(())
 }
@@ -281,6 +291,7 @@ pub fn run() {
             start_mic_monitor,
             stop_mic_monitor,
             set_monitor_gain,
+            set_monitor_iso,
             get_settings,
             set_data_dir,
             set_default_clip,

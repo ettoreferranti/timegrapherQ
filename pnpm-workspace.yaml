@@ -3,3 +3,15 @@
 # native bundler binary.
 allowBuilds:
   esbuild: true
+
+# Acknowledged, un-actionable advisory. GHSA-gv7w-rqvm-qjhr (esbuild <0.28.1:
+# RCE via NPM_CONFIG_REGISTRY) arrives transitively through Vite, which pins
+# esbuild ^0.25.0 up to and including Vite 7; the patched 0.28.1 is incompatible
+# with Vite 6's transform pipeline (breaks the production build), and Vite 8
+# drops esbuild for rolldown — a major migration. The flaw is dev/build-time
+# only (esbuild's installer/dev-server); esbuild is not in the shipped Tauri
+# app. Waive this single GHSA — every other advisory still fails the audit gate.
+# Remove once Vite ships a build compatible with esbuild >=0.28.1.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-gv7w-rqvm-qjhr

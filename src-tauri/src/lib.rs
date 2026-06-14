@@ -65,9 +65,17 @@ async fn record_and_analyze(
     lift_angle_deg: f64,
     seconds: f64,
     save_recording: bool,
+    band_hint_hz: Option<f64>,
 ) -> Result<audio::MeasurementDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        audio::record_and_analyze(device_name, bph, lift_angle_deg, seconds, save_recording)
+        audio::record_and_analyze(
+            device_name,
+            bph,
+            lift_angle_deg,
+            seconds,
+            save_recording,
+            band_hint_hz,
+        )
     })
     .await
     .map_err(|e| format!("recording task failed: {e}"))?
@@ -80,10 +88,13 @@ async fn analyze_file(
     path: String,
     bph: u32,
     lift_angle_deg: f64,
+    band_hint_hz: Option<f64>,
 ) -> Result<audio::MeasurementDto, String> {
-    tauri::async_runtime::spawn_blocking(move || import::analyze_file(&path, bph, lift_angle_deg))
-        .await
-        .map_err(|e| format!("analysis task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        import::analyze_file(&path, bph, lift_angle_deg, band_hint_hz)
+    })
+    .await
+    .map_err(|e| format!("analysis task failed: {e}"))?
 }
 
 /// Start live mode: continuous capture + analysis, streamed to the UI as
@@ -94,11 +105,12 @@ async fn start_live(
     device_name: Option<String>,
     bph: u32,
     lift_angle_deg: f64,
+    band_hint_hz: Option<f64>,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     // Opening the device can block for a moment; keep it off the event loop.
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        live::start(app, device_name, bph, lift_angle_deg)
+        live::start(app, device_name, bph, lift_angle_deg, band_hint_hz)
     })
     .await
     .map_err(|e| format!("live start failed: {e}"))??;

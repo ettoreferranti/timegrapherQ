@@ -72,17 +72,18 @@ fn main() {
         None => STANDARD_BPH.to_vec(),
     };
 
-    // Optional single-band override (disables the scan), e.g. TGQ_BAND_HZ=8000.
+    // Optional band hint (narrow band-pass, disables the scan), e.g.
+    // TGQ_BAND_HZ=10000 to analyse exactly where the tick sits.
     let band_hz: Option<f64> = env::var("TGQ_BAND_HZ").ok().and_then(|v| v.parse().ok());
 
     for bph in candidates {
-        let mut cfg = AnalysisConfig::new(bph, 52.0);
-        if let Some(hz) = band_hz {
-            cfg.band_centers_hz = vec![hz];
-        }
+        let cfg = AnalysisConfig {
+            band_hint_hz: band_hz,
+            ..AnalysisConfig::new(bph, 52.0)
+        };
         match analyze(&samples, sample_rate, &cfg) {
             Some(m) => println!(
-                "bph {:>6}: rate {:+8.1} ±{:4.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz | masked {:.1} s",
+                "bph {:>6}: rate {:+8.1} ±{:4.1} s/d | beat error {:5.2} ms | amplitude {} | beats {}/{} used/detected (~{} expected) | quality {:.2} | band {:.0} Hz | masked {:.1} s{}",
                 bph,
                 m.rate_s_per_day,
                 m.rate_ci95_s_per_day,
@@ -93,7 +94,8 @@ fn main() {
                 m.beats_expected,
                 m.quality,
                 m.band_center_hz,
-                m.masked_s
+                m.masked_s,
+                if m.period_locked { " | period-locked" } else { "" }
             ),
             None => println!("bph {bph:>6}: no measurement"),
         }

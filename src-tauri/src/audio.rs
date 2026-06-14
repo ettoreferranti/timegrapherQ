@@ -52,6 +52,9 @@ pub struct MeasurementDto {
     /// Band-pass centre (Hz) the analyzer locked onto (or, without a
     /// measurement, the most periodic band found).
     pub band_center_hz: f64,
+    /// True when the rate was recovered by period-locked extraction (a faint,
+    /// noisy signal) rather than direct onset detection — best-effort.
+    pub period_locked: bool,
     /// Seconds silenced as loud outliers (handling bumps, coughs).
     pub masked_seconds: f64,
     pub quality: f64,
@@ -106,6 +109,7 @@ pub fn record_and_analyze(
     lift_angle_deg: f64,
     seconds: f64,
     save_recording: bool,
+    band_hint_hz: Option<f64>,
 ) -> Result<MeasurementDto, String> {
     validate_params(bph, lift_angle_deg, seconds)?;
 
@@ -134,11 +138,13 @@ pub fn record_and_analyze(
         lift_angle_deg,
         &actual_name,
         recording_path,
+        band_hint_hz,
     ))
 }
 
 /// Analyse captured or imported samples and assemble the full DTO with
 /// diagnostics and warnings. Shared by the record and file-import paths.
+/// `band_hint_hz` (when > 0) pins the analysis to a narrow band there.
 pub fn build_dto(
     samples: &[f32],
     sample_rate: u32,
@@ -146,9 +152,13 @@ pub fn build_dto(
     lift_angle_deg: f64,
     device_name: &str,
     recording_path: Option<String>,
+    band_hint_hz: Option<f64>,
 ) -> MeasurementDto {
     let seconds = samples.len() as f64 / f64::from(sample_rate);
-    let cfg = AnalysisConfig::new(bph, lift_angle_deg);
+    let cfg = AnalysisConfig {
+        band_hint_hz: band_hint_hz.filter(|&hz| hz > 0.0),
+        ..AnalysisConfig::new(bph, lift_angle_deg)
+    };
     let peak_level = samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
     // Diagnostics are computed on the outlier-suppressed signal — the same one
     // `analyze` measures — so they aren't dominated by bumps and coughs.
@@ -186,6 +196,7 @@ pub fn build_dto(
                 beats_used: m.beats_used,
                 beats_expected: m.beats_expected,
                 band_center_hz: m.band_center_hz,
+                period_locked: m.period_locked,
                 quality: m.quality,
                 measured: true,
                 ..base_dto(bph, lift_angle_deg, sample_rate, device_name, seconds)
@@ -243,6 +254,7 @@ fn base_dto(
         periodicity: 0.0,
         detected_bph: None,
         band_center_hz: 0.0,
+        period_locked: false,
         masked_seconds: 0.0,
         quality: 0.0,
         sample_rate,

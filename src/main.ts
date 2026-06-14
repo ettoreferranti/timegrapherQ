@@ -95,6 +95,7 @@ function showMetrics(m: MeasurementDto): void {
     `peak ${m.peak_level.toFixed(3)}`,
     `rms ${m.rms_level.toFixed(4)}`,
   ];
+  if (m.period_locked) parts.push("period-locked (faint signal)");
   if (m.masked_seconds > 0)
     parts.push(`ignored ${m.masked_seconds.toFixed(1)} s of loud noise`);
   if (m.recording_path) parts.push(`saved: ${m.recording_path}`);
@@ -137,6 +138,7 @@ async function onRecord(): Promise<void> {
       liftAngleDeg: Number(el<HTMLInputElement>("lift").value),
       seconds,
       saveRecording: el<HTMLInputElement>("save").checked,
+      bandHintHz: bandHintHz(),
     });
     lastMeasurement = m;
     status.textContent = "";
@@ -170,6 +172,7 @@ async function onAnalyzeFile(): Promise<void> {
       path,
       Number(el<HTMLSelectElement>("bph").value),
       Number(el<HTMLInputElement>("lift").value),
+      bandHintHz(),
     );
     lastMeasurement = m;
     status.textContent = "";
@@ -206,6 +209,12 @@ function deviceValue(): string | null {
 }
 function gainValue(): number {
   return Number(el<HTMLInputElement>("mic-gain").value);
+}
+
+/** The "Tick band" analysis hint in Hz (kHz input; 0 → null = auto-scan). */
+function bandHintHz(): number | null {
+  const khz = Number(el<HTMLInputElement>("band-hint").value);
+  return khz > 0 ? khz * 1000 : null;
 }
 
 async function onToggleMonitor(): Promise<void> {
@@ -312,6 +321,11 @@ function onSpectroClick(ev: MouseEvent): void {
 function applyIso(): void {
   updateIsoReadout();
   updateIsoMarker();
+  // Carry the isolated band over to the measurement as its analysis band hint.
+  setVal(
+    "band-hint",
+    monitorIsoHz > 0 ? (monitorIsoHz / 1000).toFixed(1) : "0",
+  );
   if (monitorRunning) void api.setMonitorIso(monitorIsoHz);
 }
 
@@ -513,6 +527,7 @@ async function onToggleLive(): Promise<void> {
       el<HTMLSelectElement>("device").value || null,
       liveBph,
       Number(el<HTMLInputElement>("lift").value),
+      bandHintHz(),
     );
     liveRunning = true;
     el<HTMLButtonElement>("live-toggle").textContent = "Stop live";

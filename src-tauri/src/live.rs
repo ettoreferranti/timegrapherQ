@@ -101,6 +101,7 @@ pub fn start(
     device_name: Option<String>,
     bph: u32,
     lift_angle_deg: f64,
+    band_hint_hz: Option<f64>,
 ) -> Result<SessionHandle, String> {
     validate_movement_params(bph, lift_angle_deg)?;
 
@@ -124,7 +125,15 @@ pub fn start(
         let stop = Arc::clone(&stop);
         let buf = Arc::clone(&buf);
         std::thread::spawn(move || {
-            analysis_thread(app, buf, stop, sample_rate, bph, lift_angle_deg)
+            analysis_thread(
+                app,
+                buf,
+                stop,
+                sample_rate,
+                bph,
+                lift_angle_deg,
+                band_hint_hz,
+            )
         });
     }
 
@@ -174,10 +183,12 @@ fn analysis_thread(
     sample_rate: u32,
     bph: u32,
     lift_angle_deg: f64,
+    band_hint_hz: Option<f64>,
 ) {
     let sr = f64::from(sample_rate);
     let keep_n = (KEEP_S * sr) as usize;
     let window_n = (WINDOW_S * sr) as usize;
+    let band_hint_hz = band_hint_hz.filter(|&hz| hz > 0.0);
 
     let mut trimmed: u64 = 0; // samples discarded from the front of `buf`
     let mut locked_band: Option<f64> = None;
@@ -212,13 +223,16 @@ fn analysis_thread(
         }
 
         let mut cfg = AnalysisConfig::new(bph, lift_angle_deg);
-        if let Some(hz) = locked_band {
+        if let Some(hz) = band_hint_hz {
+            // A user-chosen band: analyse exactly there with a narrow filter.
+            cfg.band_hint_hz = Some(hz);
+        } else if let Some(hz) = locked_band {
             cfg.band_centers_hz = vec![hz];
         }
 
         match analyze_with_beats(&window, sample_rate, &cfg) {
             Some((m, dots)) => {
-                if locked_band.is_none() && m.quality >= LOCK_QUALITY {
+                if band_hint_hz.is_none() && locked_band.is_none() && m.quality >= LOCK_QUALITY {
                     locked_band = Some(m.band_center_hz);
                 }
 

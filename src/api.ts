@@ -24,6 +24,8 @@ export interface MeasurementDto {
   detected_bph: number | null;
   /** Band-pass centre (Hz) the analyzer locked onto. */
   band_center_hz: number;
+  /** True when the rate was recovered by period-locked extraction (faint signal). */
+  period_locked: boolean;
   /** Seconds silenced as loud outliers (handling bumps, coughs). */
   masked_seconds: number;
   quality: number;
@@ -177,6 +179,8 @@ export interface RecordArgs {
   liftAngleDeg: number;
   seconds: number;
   saveRecording: boolean;
+  /** Narrow band-pass centre (Hz) to focus the analysis on; 0/null = auto. */
+  bandHintHz: number | null;
 }
 
 export const api = {
@@ -184,10 +188,25 @@ export const api = {
   listInputDevices: () => invoke<DeviceInfo[]>("list_input_devices"),
   recordAndAnalyze: (args: RecordArgs) =>
     invoke<MeasurementDto>("record_and_analyze", { ...args }),
-  analyzeFile: (path: string, bph: number, liftAngleDeg: number) =>
-    invoke<MeasurementDto>("analyze_file", { path, bph, liftAngleDeg }),
-  startLive: (deviceName: string | null, bph: number, liftAngleDeg: number) =>
-    invoke<void>("start_live", { deviceName, bph, liftAngleDeg }),
+  analyzeFile: (
+    path: string,
+    bph: number,
+    liftAngleDeg: number,
+    bandHintHz: number | null,
+  ) =>
+    invoke<MeasurementDto>("analyze_file", {
+      path,
+      bph,
+      liftAngleDeg,
+      bandHintHz,
+    }),
+  startLive: (
+    deviceName: string | null,
+    bph: number,
+    liftAngleDeg: number,
+    bandHintHz: number | null,
+  ) =>
+    invoke<void>("start_live", { deviceName, bph, liftAngleDeg, bandHintHz }),
   stopLive: () => invoke<void>("stop_live"),
   startMicMonitor: (
     deviceName: string | null,

@@ -26,7 +26,12 @@ const MAX_DURATION_S: f64 = 600.0;
 
 /// Decode `path` and analyse it like a recording. The DTO's device name is
 /// `file: <name>` and its recording path points at a decoded temp WAV.
-pub fn analyze_file(path: &str, bph: u32, lift_angle_deg: f64) -> Result<MeasurementDto, String> {
+pub fn analyze_file(
+    path: &str,
+    bph: u32,
+    lift_angle_deg: f64,
+    band_hint_hz: Option<f64>,
+) -> Result<MeasurementDto, String> {
     validate_movement_params(bph, lift_angle_deg)?;
 
     let (samples, sample_rate) = decode_audio(Path::new(path))?;
@@ -55,6 +60,7 @@ pub fn analyze_file(path: &str, bph: u32, lift_angle_deg: f64) -> Result<Measure
         lift_angle_deg,
         &format!("file: {file_label}"),
         recording_path,
+        band_hint_hz,
     ))
 }
 
@@ -144,7 +150,7 @@ mod tests {
         let dir = test_dir();
         let path = save_wav(&sig.samples, sig.sample_rate, &dir).expect("write wav");
 
-        let dto = analyze_file(&path, 28_800, 52.0).expect("analyse file");
+        let dto = analyze_file(&path, 28_800, 52.0, None).expect("analyse file");
         assert!(dto.measured, "expected a measurement");
         assert!(dto.quality > 0.8, "quality={}", dto.quality);
         assert!(
@@ -168,7 +174,7 @@ mod tests {
         let Some(path) = std::env::var_os("TGQ_IMPORT_TEST_FILE") else {
             return;
         };
-        let dto = analyze_file(&path.to_string_lossy(), 28_800, 52.0).expect("analyse file");
+        let dto = analyze_file(&path.to_string_lossy(), 28_800, 52.0, None).expect("analyse file");
         println!(
             "{}: rate {:+.1} ±{:.1} s/d | quality {:.2} | band {:.0} Hz | masked {:.1} s",
             dto.device_name,
@@ -183,8 +189,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_inputs() {
-        assert!(analyze_file("/nonexistent/file.wav", 28_800, 52.0).is_err());
-        assert!(analyze_file("/tmp/x.wav", 0, 52.0).is_err());
+        assert!(analyze_file("/nonexistent/file.wav", 28_800, 52.0, None).is_err());
+        assert!(analyze_file("/tmp/x.wav", 0, 52.0, None).is_err());
     }
 
     #[test]
@@ -192,7 +198,7 @@ mod tests {
         let dir = test_dir();
         let samples = vec![0.1_f32; 4800]; // 0.1 s at 48 kHz
         let path = save_wav(&samples, 48_000, &dir).expect("write wav");
-        let err = analyze_file(&path, 28_800, 52.0).unwrap_err();
+        let err = analyze_file(&path, 28_800, 52.0, None).unwrap_err();
         assert!(err.contains("too short"), "{err}");
         let _ = std::fs::remove_file(&path);
     }

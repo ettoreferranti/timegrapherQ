@@ -18,6 +18,16 @@ use crate::{amplitude_degrees, dsp};
 /// high-frequency snap at 8–16 kHz.
 pub const DEFAULT_BAND_CENTERS_HZ: [f64; 5] = [3000.0, 6000.0, 9000.0, 12000.0, 15000.0];
 
+/// Minimum envelope periodicity for the period-locked fallback to engage. Below
+/// this the signal is treated as noise (no fake beats are invented).
+const PERIOD_LOCK_MIN_PERIODICITY: f64 = 0.35;
+/// Minimum peak/mean contrast of the folded (synchronously averaged) envelope
+/// for the period-locked fallback to trust a tick. A flat fold (noise) is ≈1;
+/// a real tick concentrates into a peak well above the mean.
+const PERIOD_LOCK_FOLD_CONTRAST: f64 = 1.3;
+/// Confidence multiplier applied to period-locked measurements (best-effort).
+const PERIOD_LOCK_QUALITY_SCALE: f64 = 0.7;
+
 /// Tunable parameters for [`analyze`]. Construct with [`AnalysisConfig::new`]
 /// to get sensible DSP defaults and override fields as needed.
 #[derive(Debug, Clone)]
@@ -32,6 +42,14 @@ pub struct AnalysisConfig {
     /// most confident measurement. Leave empty to use `bandpass_center_hz`
     /// alone (no scan).
     pub band_centers_hz: Vec<f64>,
+    /// If set, skip the scan and analyse only this band-pass centre (Hz), using
+    /// the narrower [`AnalysisConfig::band_hint_q`]. Used when the user has
+    /// found the tick's frequency (e.g. via the mic monitor's isolation) so the
+    /// analyzer looks exactly there, with a tighter band, for the best SNR.
+    pub band_hint_hz: Option<f64>,
+    /// Band-pass Q used for the hinted band — narrower than [`Self::bandpass_q`]
+    /// to reject noise either side of a known tick frequency.
+    pub band_hint_q: f64,
     /// Band-pass Q (bandwidth ≈ centre / Q).
     pub bandpass_q: f64,
     /// Envelope smoothing time constant (seconds).
@@ -70,6 +88,8 @@ impl AnalysisConfig {
             lift_angle_deg,
             bandpass_center_hz: 3000.0,
             band_centers_hz: DEFAULT_BAND_CENTERS_HZ.to_vec(),
+            band_hint_hz: None,
+            band_hint_q: 6.0,
             bandpass_q: 0.7,
             envelope_tau_s: 0.0008,
             reference_percentile: 0.99,
@@ -115,6 +135,11 @@ pub struct Measurement {
     pub detected_bph: Option<f64>,
     /// Band-pass centre (Hz) that produced this measurement.
     pub band_center_hz: f64,
+    /// True when beats were recovered by period-locked extraction (synchronous
+    /// averaging at the nominal period) rather than direct onset detection —
+    /// a faint, noisy signal. Treat the reading as best-effort; the rate
+    /// confidence interval will be correspondingly wide.
+    pub period_locked: bool,
     /// Seconds silenced as loud outliers (handling bumps, coughs) before
     /// analysis.
     pub masked_s: f64,
@@ -165,9 +190,10 @@ pub fn analyze_with_beats(
     cfg: &AnalysisConfig,
 ) -> Option<(Measurement, Vec<BeatDot>)> {
     let (cleaned, masked_s) = suppress_outliers(samples, sample_rate, cfg);
+    let band_q = effective_q(cfg);
     let mut best: Option<(Measurement, Vec<BeatDot>)> = None;
     for hz in candidate_band_centers(cfg, f64::from(sample_rate)) {
-        let m = analyze_band(&cleaned, sample_rate, cfg, hz, masked_s);
+        let m = analyze_band(&cleaned, sample_rate, cfg, hz, band_q, masked_s);
         let better = match (&m, &best) {
             (Some((m, _)), Some((b, _))) => m.quality > b.quality,
             (Some(_), None) => true,
@@ -203,6 +229,12 @@ pub fn suppress_outliers(
 /// compute diagnostics over the same bands the analyzer sees.
 pub fn candidate_band_centers(cfg: &AnalysisConfig, sample_rate: f64) -> Vec<f64> {
     let max_center = 0.45 * sample_rate;
+    // A band hint pins the analysis to one centre (no scan).
+    if let Some(hz) = cfg.band_hint_hz {
+        if hz > 0.0 {
+            return vec![hz.min(max_center * 0.99)];
+        }
+    }
     let mut centers: Vec<f64> = if cfg.band_centers_hz.is_empty() {
         vec![cfg.bandpass_center_hz]
     } else {
@@ -215,6 +247,15 @@ pub fn candidate_band_centers(cfg: &AnalysisConfig, sample_rate: f64) -> Vec<f64
     centers
 }
 
+/// The band-pass Q [`analyze`] uses: the narrower [`AnalysisConfig::band_hint_q`]
+/// when a band hint is active, otherwise [`AnalysisConfig::bandpass_q`].
+fn effective_q(cfg: &AnalysisConfig) -> f64 {
+    match cfg.band_hint_hz {
+        Some(hz) if hz > 0.0 => cfg.band_hint_q,
+        _ => cfg.bandpass_q,
+    }
+}
+
 /// The single-band measurement pipeline behind [`analyze`]. Expects samples
 /// already cleaned by [`suppress_outliers`]; `masked_s` (the silenced
 /// duration) is excluded from the expected beat count.
@@ -223,6 +264,7 @@ fn analyze_band(
     sample_rate: u32,
     cfg: &AnalysisConfig,
     band_center_hz: f64,
+    band_q: f64,
     masked_s: f64,
 ) -> Option<(Measurement, Vec<BeatDot>)> {
     let sr = f64::from(sample_rate);
@@ -230,7 +272,7 @@ fn analyze_band(
     let nominal_period = 3600.0 / f64::from(cfg.bph);
     let beats_expected = ((duration_s - masked_s).max(0.0) / nominal_period).round() as usize;
 
-    let filtered = dsp::bandpass(samples, sr, band_center_hz, cfg.bandpass_q);
+    let filtered = dsp::bandpass(samples, sr, band_center_hz, band_q);
     let env = dsp::envelope(&filtered, sr, cfg.envelope_tau_s);
     let (periodicity, detected_bph) = dominant_periodicity(&env, sr);
     let reference = dsp::percentile(&env, cfg.reference_percentile);
@@ -244,6 +286,21 @@ fn analyze_band(
     );
 
     let mut beats = trim_edges(group_beats(&onsets, nominal_period, cfg.beat_gap_ratio));
+
+    // Low-SNR fallback: a faint tick may be too weak for the onset threshold
+    // (few or no transients) yet still register as periodic. When the envelope
+    // is periodic but onsets are sparse, recover beats by locking to the
+    // nominal grid (synchronous averaging reveals the phase). Keep whichever
+    // approach found more beats.
+    let mut period_locked = false;
+    if periodicity >= PERIOD_LOCK_MIN_PERIODICITY && beats.len() < (beats_expected / 2).max(8) {
+        let locked = extract_period_locked(&env, sr, nominal_period);
+        if locked.len() > beats.len() {
+            beats = locked;
+            period_locked = true;
+        }
+    }
+
     let beats_detected = beats.len();
     if beats_detected < 4 {
         return None;
@@ -308,13 +365,19 @@ fn analyze_band(
     );
     let beat_error_ms = beat_error_ms_from_beats(&kept);
     let amplitude_deg = amplitude_from_beats(&kept, cfg);
-    let quality = confidence(
+    let mut quality = confidence(
         &kept,
         beats_expected,
         measured_period,
         nominal_period,
         periodicity,
     );
+    // Period-locked beats are picked from noise, so the reading is less certain
+    // than the coverage alone implies; discount it (the wide rate CI is the
+    // other honesty signal).
+    if period_locked {
+        quality *= PERIOD_LOCK_QUALITY_SCALE;
+    }
 
     Some((
         Measurement {
@@ -330,11 +393,84 @@ fn analyze_band(
             periodicity,
             detected_bph,
             band_center_hz,
+            period_locked,
             masked_s,
             quality,
         },
         dots,
     ))
+}
+
+/// Recover beats from a faint-but-periodic envelope by locking to the nominal
+/// beat grid, when direct onset detection found too few transients.
+///
+/// Synchronous averaging: folding the envelope at the nominal period sums every
+/// beat on top of each other, so the tick — even when each one is near the
+/// noise floor — accumulates into a clear peak whose position gives the beat
+/// phase (noise averages down by ~√N). Then we take the envelope maximum in a
+/// window around each grid beat as that beat's onset. Folding uses the true
+/// (fractional) period so phase doesn't drift across the clip. Returns onsets
+/// only (no within-beat spacing, so amplitude is left undetermined); the
+/// downstream fit measures the actual rate from these onsets.
+fn extract_period_locked(env: &[f64], sr: f64, nominal_period: f64) -> Vec<Beat> {
+    let period_n = nominal_period * sr;
+    if period_n < 4.0 || (env.len() as f64) < 4.0 * period_n {
+        return Vec::new();
+    }
+    let bins = period_n.round() as usize;
+
+    // Fold the envelope into `bins` phase bins at the true period.
+    let mut prof = vec![0.0f64; bins];
+    let mut count = vec![0u32; bins];
+    for (i, &e) in env.iter().enumerate() {
+        let phase = (i as f64) % period_n; // 0..period_n, drift-free
+        let b = ((phase / period_n) * bins as f64) as usize % bins;
+        prof[b] += e;
+        count[b] += 1;
+    }
+    let mut phase_bin = 0;
+    let mut best = f64::MIN;
+    let mut sum_avg = 0.0;
+    for (b, (&sum, &n)) in prof.iter().zip(&count).enumerate() {
+        let avg = if n > 0 { sum / f64::from(n) } else { 0.0 };
+        sum_avg += avg;
+        if avg > best {
+            best = avg;
+            phase_bin = b;
+        }
+    }
+    // Bail if the fold is flat (no coherent tick) — this is what keeps the
+    // fallback from inventing beats in pure noise.
+    let mean_avg = sum_avg / bins as f64;
+    if mean_avg <= 0.0 || best < PERIOD_LOCK_FOLD_CONTRAST * mean_avg {
+        return Vec::new();
+    }
+    let phase = (phase_bin as f64 + 0.5) / bins as f64 * period_n;
+
+    // One beat per grid slot: the envelope argmax within ±0.4 period.
+    let w = (0.4 * period_n) as isize;
+    let n_beats = ((env.len() as f64 - phase) / period_n) as usize;
+    let mut beats = Vec::with_capacity(n_beats);
+    for k in 0..n_beats {
+        let center = (phase + k as f64 * period_n).round() as isize;
+        let lo = (center - w).max(0) as usize;
+        let hi = ((center + w) as usize).min(env.len() - 1);
+        if hi <= lo {
+            continue;
+        }
+        let mut best_i = lo;
+        for i in lo..=hi {
+            if env[i] > env[best_i] {
+                best_i = i;
+            }
+        }
+        beats.push(Beat {
+            onset: best_i as f64 / sr,
+            spacing: None,
+            index: 0.0,
+        });
+    }
+    beats
 }
 
 /// Estimate the dominant envelope periodicity (0–1) and the bph it implies,
@@ -922,6 +1058,87 @@ mod tests {
             .collect();
         let (slope, _) = theil_sen(&xs, &ys).expect("fit");
         assert!((slope - 2.0).abs() < 0.01, "slope={slope}");
+    }
+
+    #[test]
+    fn band_hint_pins_a_single_narrow_band() {
+        let cfg = AnalysisConfig {
+            band_hint_hz: Some(10_000.0),
+            ..AnalysisConfig::new(28_800, 52.0)
+        };
+        assert_eq!(candidate_band_centers(&cfg, 48_000.0), vec![10_000.0]);
+        assert_eq!(effective_q(&cfg), cfg.band_hint_q);
+        // No hint → full scan at the wide Q.
+        let plain = AnalysisConfig::new(28_800, 52.0);
+        assert!(candidate_band_centers(&plain, 48_000.0).len() > 1);
+        assert_eq!(effective_q(&plain), plain.bandpass_q);
+    }
+
+    #[test]
+    fn period_locked_recovers_when_onsets_fail() {
+        // A real periodic tick with mild noise, but with onset detection
+        // defeated (threshold set absurdly high) to stand in for a signal too
+        // faint to threshold. The period-locked fallback must still recover the
+        // rate and flag itself.
+        let spec = SignalSpec {
+            duration_s: 20.0,
+            rate_s_per_day: 8.0,
+            noise_amplitude: 0.03,
+            seed: 4,
+            ..Default::default()
+        };
+        let sig = synth_escapement(&spec);
+        let cfg = AnalysisConfig {
+            threshold_ratio: 100.0, // defeat onset detection
+            ..AnalysisConfig::new(spec.bph, spec.lift_angle_deg)
+        };
+        let m = analyze(&sig.samples, sig.sample_rate, &cfg).expect("a measurement");
+        assert!(m.period_locked, "expected the period-locked fallback");
+        assert!(
+            (m.rate_s_per_day - 8.0).abs() < 3.0,
+            "rate={} ci={}",
+            m.rate_s_per_day,
+            m.rate_ci95_s_per_day
+        );
+    }
+
+    #[test]
+    fn period_locked_extracts_grid_beats_and_rejects_noise() {
+        // Direct test of the fallback. A faint periodic bump on a noise floor
+        // yields ~one beat per period near the bump phase; a flat fold (no
+        // periodic component) yields nothing.
+        let sr = 48_000.0;
+        let period = 0.125; // 28800 bph
+        let period_n = (period * sr) as usize;
+        let n = period_n * 40;
+        let mut env = vec![0.10f64; n]; // noise floor (rectified)
+        for k in 0..40 {
+            let peak = k * period_n + period_n / 2;
+            if peak < n {
+                env[peak] = 0.5; // a clear periodic bump
+            }
+        }
+        let beats = extract_period_locked(&env, sr, period);
+        assert!(beats.len() >= 35, "got {} beats", beats.len());
+        // Flat envelope (no periodicity) → no beats.
+        let flat = vec![0.2f64; n];
+        assert!(extract_period_locked(&flat, sr, period).is_empty());
+    }
+
+    #[test]
+    fn period_locked_does_not_fire_on_clean_signals() {
+        // A clean signal is measured by onset detection, not the fallback.
+        let spec = SignalSpec {
+            duration_s: 10.0,
+            ..Default::default()
+        };
+        let sig = synth_escapement(&spec);
+        let cfg = AnalysisConfig::new(spec.bph, spec.lift_angle_deg);
+        let m = analyze(&sig.samples, sig.sample_rate, &cfg).expect("a measurement");
+        assert!(
+            !m.period_locked,
+            "clean signal should not need period-locking"
+        );
     }
 
     #[test]
